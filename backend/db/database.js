@@ -9,18 +9,19 @@ const db = new Database(dbPath);
 // Encryption Key should be 32 bytes for AES-256-CBC
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
 const ALGORITHM = 'aes-256-cbc';
-const IV_LENGTH = 16; // For AES, this is always 16
+const IV_LENGTH = 16; 
 
-// Initialize database schema
+// Initialize database schema (matching existing shopify_app.db)
 db.exec(`
   CREATE TABLE IF NOT EXISTS stores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     api_name TEXT NOT NULL,
     shop_domain TEXT UNIQUE NOT NULL,
-    access_token TEXT NOT NULL,
+    access_token_encrypted TEXT NOT NULL,
+    access_token_iv TEXT NOT NULL,
     max_orders INTEGER DEFAULT 100,
     usage_count INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT (datetime('now'))
   )
 `);
 
@@ -29,66 +30,81 @@ db.exec(`
  */
 function encrypt(text) {
   if (!ENCRYPTION_KEY) {
-    console.error('Missing ENCRYPTION_KEY in .env');
-    return text; // Fallback if no key (not secure)
+    console.warn('Warning: Missing ENCRYPTION_KEY in .env. Storing as plaintext.');
+    return { iv: 'plaintext', encrypted: text };
   }
   
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY), iv);
   let encrypted = cipher.update(text);
   encrypted = Buffer.concat([encrypted, cipher.final()]);
-  return iv.toString('hex') + ':' + encrypted.toString('hex');
+  return {
+    iv: iv.toString('hex'),
+    encrypted: encrypted.toString('hex')
+  };
 }
 
 /**
  * Decrypts an access token
  */
-function decrypt(text) {
-  if (!ENCRYPTION_KEY || !text.includes(':')) return text;
+function decrypt(encryptedText, ivHex) {
+  if (!ENCRYPTION_KEY || ivHex === 'plaintext') return encryptedText;
   
   try {
-    const textParts = text.split(':');
-    const iv = Buffer.from(textParts.shift(), 'hex');
-    const encryptedText = Buffer.from(textParts.join(':'), 'hex');
+    const iv = Buffer.from(ivHex, 'hex');
+    const encrypted = Buffer.from(encryptedText, 'hex');
     const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY), iv);
-    let decrypted = decipher.update(encryptedText);
+    let decrypted = decipher.update(encrypted);
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     return decrypted.toString();
   } catch (err) {
     console.error('Decryption failed:', err.message);
-    return text;
+    return encryptedText;
   }
 }
 
 // --- Database Operations ---
 
 function addStore(api_name, shop_domain, access_token, max_orders = 100) {
-  const encryptedToken = encrypt(access_token);
+  const { iv, encrypted } = encrypt(access_token);
   const stmt = db.prepare(`
-    INSERT INTO stores (api_name, shop_domain, access_token, max_orders)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO stores (api_name, shop_domain, access_token_encrypted, access_token_iv, max_orders)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(shop_domain) DO UPDATE SET
       api_name = excluded.api_name,
-      access_token = excluded.access_token,
+      access_token_encrypted = excluded.access_token_encrypted,
+      access_token_iv = excluded.access_token_iv,
       max_orders = excluded.max_orders
   `);
-  return stmt.run(api_name, shop_domain, encryptedToken, max_orders);
+  return stmt.run(api_name, shop_domain, encrypted, iv, max_orders);
 }
 
 function getAllStores() {
-  const stores = db.prepare('SELECT * FROM stores ORDER BY created_at DESC').all();
-  return stores.map(store => ({
-    ...store,
-    access_token: decrypt(store.access_token)
+  const rows = db.prepare('SELECT * FROM stores ORDER BY created_at DESC').all();
+  return rows.map(row => ({
+    id: row.id,
+    api_name: row.api_name,
+    shop_domain: row.shop_domain,
+    access_token: decrypt(row.access_token_encrypted, row.access_token_iv),
+    max_orders: row.max_orders,
+    usage_count: row.usage_count,
+    created_at: row.created_at
   }));
 }
 
 function getStoreByDomain(shop_domain) {
-  const store = db.prepare('SELECT * FROM stores WHERE shop_domain = ?').get(shop_domain);
-  if (store) {
-    store.access_token = decrypt(store.access_token);
-  }
-  return store;
+  const row = db.prepare('SELECT * FROM stores WHERE shop_domain = ?').get(shop_domain);
+  if (!row) return null;
+  
+  return {
+    id: row.id,
+    api_name: row.api_name,
+    shop_domain: row.shop_domain,
+    access_token: decrypt(row.access_token_encrypted, row.access_token_iv),
+    max_orders: row.max_orders,
+    usage_count: row.usage_count,
+    created_at: row.created_at
+  };
 }
 
 function deleteStoreByDomain(shop_domain) {
