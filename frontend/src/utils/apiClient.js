@@ -74,11 +74,11 @@ export function validateCsvRows(rows) {
 }
 
 export function downloadDemoCsv() {
-  window.open('/api/csv/demo', '_blank');
+  window.open(`${API_BASE}/api/csv/demo`, '_blank');
 }
 
 export function downloadDemoStoresCsv() {
-  window.open('/api/csv/demo-stores', '_blank');
+  window.open(`${API_BASE}/api/csv/demo-stores`, '_blank');
 }
 
 /* ─── Log APIs ─── */
@@ -95,7 +95,7 @@ export function clearLogs() {
 
 export function sendBulkInvoices(rows, subject, customMessage, shopDomain, onEvent) {
   return new Promise((resolve, reject) => {
-    fetch('/api/invoice/send-bulk', {
+    fetch(`${API_BASE}/api/invoice/send-bulk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
