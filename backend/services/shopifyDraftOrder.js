@@ -107,10 +107,7 @@ async function createDraftOrder(shopDomain, accessToken, rowData) {
     customer_id: customerId
   });
 
-  // Subscribe customer to email marketing
-  if (customerId) {
-    await subscribeCustomerToMarketing(cleanDomain, accessToken, customerId, rowData.email);
-  }
+  // NOTE: subscribeCustomerToMarketing removed — requires write_customers scope
 
   return draftOrder;
 }

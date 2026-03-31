@@ -12,9 +12,9 @@ async function sendInvoice(shopDomain, accessToken, draftOrderId, rowData, subje
   if (!draftOrderId) throw new Error('draftOrderId is missing');
   if (!accessToken) throw new Error('accessToken is missing');
 
-  // Wait 500ms after draft order creation
+  // Wait 1500ms after draft order creation
   logger.info(`Sending invoice to ${rowData.email}...`);
-  await new Promise(resolve => setTimeout(resolve, 500));
+  await new Promise(resolve => setTimeout(resolve, 1500));
 
   const cleanDomain = shopDomain.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const url = `https://${cleanDomain}/admin/api/${API_VERSION}/draft_orders/${draftOrderId}/send_invoice.json`;

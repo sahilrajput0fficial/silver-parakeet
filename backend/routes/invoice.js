@@ -17,8 +17,8 @@ const { completeDraftOrder } = require('../services/shopifyCompleteDraft');
 const logger = require('../utils/logger');
 
 const MAX_RETRIES = 3;
-const RATE_LIMIT_DELAY = 2000;
-const ROW_DELAY = 1000;
+const RATE_LIMIT_DELAY = 10000; // 10s wait on rate limit (dev stores need more time)
+const ROW_DELAY = 3000;         // 3s between rows (dev stores have low rate limits)
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
