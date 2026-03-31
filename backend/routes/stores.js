@@ -61,7 +61,7 @@ router.post('/api/store/add', async (req, res) => {
       max_orders: max_orders || 100,
       created_at: Date.now()
     };
-
+    // Clean up states older than 10 minutes
     // Clean up states older than 10 minutes
     const tenMinutesAgo = Date.now() - 600000;
     for (const [key, val] of Object.entries(global._oauthStates)) {
