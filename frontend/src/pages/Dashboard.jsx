@@ -175,7 +175,7 @@ export default function Dashboard() {
                 📦 Shopify Invoice Sender
               </Text>
               <Text variant="bodySm" tone="subdued" as="p">
-                CSV Upload → Draft Order → Invoice — powered by Shopify API
+                CSV Upload → Draft Order → Complete → Order Confirmation (auto email by Shopify)
               </Text>
             </BlockStack>
             <InlineStack gap="200">

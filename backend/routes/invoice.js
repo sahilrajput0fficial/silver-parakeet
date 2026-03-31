@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { getStoreByDomain, incrementUsage } = require('../db/database');
 const { createDraftOrder } = require('../services/shopifyDraftOrder');
+const { completeDraftOrder } = require('../services/shopifyCompleteDraft');
 const { sendInvoice } = require('../services/shopifyInvoice');
 const logger = require('../utils/logger');
 
@@ -165,6 +166,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
     const row = rows[i];
     let status = 'Failed';
     let draftOrderId = null;
+    let realOrderId = null;
     let errorMessage = '';
     let retries = 0;
     let success = false;
@@ -195,17 +197,23 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
         );
         draftOrderId = draftOrder.id;
 
-        // Step 2: Send invoice (has built-in 1500ms delay)
-        await sendInvoice(
+        // Step 2: Complete draft order (marks as PAID → creates real Order)
+        // Shopify automatically sends Order Confirmation email!
+        const completeResult = await completeDraftOrder(
           store.shop_domain,
           store.access_token,
           draftOrderId,
-          row,
-          subject,
-          custom_message
+          row.email
         );
+        realOrderId = completeResult.real_order_id;
 
-        status = 'Sent ✓';
+        logger.info(`✅ Order completed & confirmed for ${row.email}`, {
+          draft_order_id: draftOrderId,
+          real_order_id: realOrderId,
+          message: 'Shopify Order Confirmation email sent automatically!'
+        });
+
+        status = 'Completed ✓';
         success = true;
         sentCount++;
         incrementUsage(store.shop_domain);
@@ -214,7 +222,9 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
         logger.info(`Row ${i + 1} COMPLETE`, {
           email: row.email,
           draft_order_id: draftOrderId,
-          invoice_sent: true
+          real_order_id: realOrderId,
+          order_completed: true,
+          confirmation_email: 'auto-sent by Shopify'
         });
 
       } catch (error) {
@@ -244,7 +254,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
         if (!draftOrderId) {
           status = 'Failed - Order Error';
         } else {
-          status = 'Failed - Email Error';
+          status = 'Failed - Complete Error';
         }
         break;
       }
@@ -255,7 +265,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
       if (!draftOrderId) {
         status = 'Failed - Order Error';
       } else {
-        status = 'Failed - Email Error';
+        status = 'Failed - Complete Error';
       }
     }
 
@@ -266,6 +276,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
       email: row.email,
       status,
       draft_order_id: draftOrderId,
+      real_order_id: realOrderId,
       error: success ? null : errorMessage
     })}\n\n`);
 

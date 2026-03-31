@@ -193,7 +193,7 @@ export default function InvoiceTable({ rows, shopDomain, onComplete, onScopeErro
   ]);
 
   const failedCount = statuses.filter(s => s && s.startsWith('Failed')).length;
-  const sentCount = statuses.filter(s => s === 'Sent ✓').length;
+  const sentCount = statuses.filter(s => s === 'Completed ✓' || s === 'Sent ✓').length;
 
   return (
     <Card>
@@ -235,7 +235,7 @@ export default function InvoiceTable({ rows, shopDomain, onComplete, onScopeErro
             loading={sending}
             disabled={sending || rows.length === 0}
           >
-            Send All Invoices
+            🚀 Send All Orders
           </Button>
 
           {failedCount > 0 && !sending && (
