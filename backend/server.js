@@ -27,10 +27,15 @@ app.use(cors({
       "http://localhost:3001",
       "http://127.0.0.1:5173",
       "http://127.0.0.1:3000",
+      "https://shopify-emails.netlify.app",
+      "https://silver-parakeet-production.up.railway.app",
       process.env.FRONTEND_URL
     ];
 
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+    const isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
+    const isAllowed = allowedOrigins.includes(origin) || allowedOrigins.includes(origin + '/');
+
+    if (isAllowed || isLocal) {
       callback(null, true);
     } else {
       console.log('Blocked by CORS:', origin);

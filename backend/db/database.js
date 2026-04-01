@@ -120,16 +120,27 @@ function clearOldSessions() {
 clearOldSessions();
 
 /**
+ * Helper to ensure encryption key is 32 bytes (AES-256)
+ */
+function getEncryptionKey() {
+  if (!ENCRYPTION_KEY) return null;
+  // If key is already 32 bytes, use it. Otherwise, hash it to create a 32-byte key.
+  if (ENCRYPTION_KEY.length === 32) return Buffer.from(ENCRYPTION_KEY);
+  return crypto.createHash('sha256').update(String(ENCRYPTION_KEY)).digest();
+}
+
+/**
  * Encrypts an access token
  */
 function encrypt(text) {
-  if (!ENCRYPTION_KEY) {
+  const key = getEncryptionKey();
+  if (!key) {
     console.warn('Warning: Missing ENCRYPTION_KEY in .env. Storing as plaintext.');
     return { iv: 'plaintext', encrypted: text };
   }
   
   const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY), iv);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
   let encrypted = cipher.update(text);
   encrypted = Buffer.concat([encrypted, cipher.final()]);
   return {
@@ -142,12 +153,13 @@ function encrypt(text) {
  * Decrypts an access token
  */
 function decrypt(encryptedText, ivHex) {
-  if (!ENCRYPTION_KEY || ivHex === 'plaintext') return encryptedText;
+  const key = getEncryptionKey();
+  if (!key || ivHex === 'plaintext') return encryptedText;
   
   try {
     const iv = Buffer.from(ivHex, 'hex');
     const encrypted = Buffer.from(encryptedText, 'hex');
-    const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY), iv);
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
     let decrypted = decipher.update(encrypted);
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     return decrypted.toString();
