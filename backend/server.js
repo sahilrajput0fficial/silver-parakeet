@@ -17,10 +17,15 @@ const PORT = process.env.PORT || 3000;
 
 /* ─── Middleware ─── */
 app.use(cors({
-  origin: function (origin, callback) {
-    callback(null, true);
-  },
-  credentials: true
+  origin: [
+    "http://localhost:3001",
+    "http://localhost:3000",
+    process.env.FRONTEND_URL || "http://localhost:5173",
+    "*"
+  ],
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -34,6 +39,14 @@ app.use((req, res, next) => {
 });
 
 /* ─── API Routes ─── */
+app.get("/api/health", (req, res) => {
+  res.json({ 
+    status: "ok",
+    message: "Server is running",
+    time: new Date().toISOString()
+  });
+});
+
 app.use(storeRoutes);
 app.use(csvRoutes);
 app.use(invoiceRoutes);
@@ -67,10 +80,17 @@ app.use((err, req, res, next) => {
 
 /* ─── Start server ─── */
 app.listen(PORT, () => {
-  console.log(`\n══════════════════════════════════════════════`);
-  console.log(`  Shopify Invoice App — Server running`);
-  console.log(`  Local:  http://localhost:${PORT}`);
-  console.log(`══════════════════════════════════════════════\n`);
+  console.log(`
+╔════════════════════════════════════╗
+║  Server running on port ${PORT}       ║
+╠════════════════════════════════════╣
+║  Routes available:                 ║
+║  GET  /api/health                  ║
+║  POST /api/store/add               ║
+║  POST /api/invoice/send-bulk       ║
+║  GET  /api/logs                    ║
+╚════════════════════════════════════╝
+  `);
 });
 
 module.exports = app;
