@@ -1,5 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
+export function getHealth() {
+  return apiFetch('/api/health');
+}
+
 /**
  * Generic fetch wrapper with error handling.
  */
@@ -14,14 +18,23 @@ async function apiFetch(endpoint, options = {}) {
     ...options
   };
 
-  const response = await fetch(url, config);
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: response.statusText }));
-    const err = new Error(errorData.error || `Request failed with status ${response.status}`);
-    if (errorData.scope_error) err.scopeError = true;
-    throw err;
+  try {
+    const response = await fetch(url, config);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: response.statusText }));
+      const err = new Error(errorData.error || `Server error ${response.status}: ${response.statusText}`);
+      if (errorData.scope_error) err.scopeError = true;
+      throw err;
+    }
+    return response.json();
+  } catch (error) {
+    if (error.message === 'Failed to fetch') {
+      throw new Error(
+        "Cannot connect to server. Check if backend is running on port 3000 and CORS allows origin http://localhost:5173"
+      );
+    }
+    throw error;
   }
-  return response.json();
 }
 
 /* ─── Store APIs ─── */
@@ -193,6 +206,12 @@ export function sendBulkInvoices(rows, subject, customMessage, shopDomain, onEve
       }
 
       processStream();
-    }).catch(reject);
+    }).catch(error => {
+      if (error.message === 'Failed to fetch') {
+        reject(new Error("Cannot connect to server. Check if backend is running on port 3000 and CORS allows origin http://localhost:5173"));
+      } else {
+        reject(error);
+      }
+    });
   });
 }

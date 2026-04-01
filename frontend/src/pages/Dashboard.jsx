@@ -40,6 +40,10 @@ export default function Dashboard() {
   const [reconnectLoading, setReconnectLoading] = useState(false);
   const [reconnectError, setReconnectError] = useState(null);
 
+  // Health check state
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [checkingHealth, setCheckingHealth] = useState(false);
+
   const fetchStores = useCallback(async () => {
     try {
       const data = await getStores();
@@ -127,9 +131,22 @@ export default function Dashboard() {
     }
   };
 
-  /* ─── Handle scope errors from InvoiceTable ─── */
   const handleScopeError = (errorMessage) => {
     setScopeError(errorMessage);
+  };
+
+  const handleTestHealth = async () => {
+    setCheckingHealth(true);
+    setHealthStatus(null);
+    try {
+      const { getHealth } = await import('../utils/apiClient');
+      const res = await getHealth();
+      setHealthStatus({ type: 'success', message: '✅ Server Connected: ' + res.message });
+    } catch (err) {
+      setHealthStatus({ type: 'critical', message: '❌ Server Not Reachable: ' + err.message });
+    } finally {
+      setCheckingHealth(false);
+    }
   };
 
   const primaryAction = user?.role === 'admin' 
@@ -154,6 +171,15 @@ export default function Dashboard() {
             onDismiss={() => setAuthMessage(null)}
           >
             <p>{authMessage.text}</p>
+          </Banner>
+        )}
+
+        {healthStatus && (
+          <Banner
+            tone={healthStatus.type}
+            onDismiss={() => setHealthStatus(null)}
+          >
+            <p>{healthStatus.message}</p>
           </Banner>
         )}
 
@@ -192,6 +218,7 @@ export default function Dashboard() {
               </Text>
             </BlockStack>
             <InlineStack gap="200">
+              <Button onClick={handleTestHealth} loading={checkingHealth} size="slim">🔌 Test Server Connection</Button>
               <Badge tone="info">{stores.length} store{stores.length !== 1 ? 's' : ''} connected</Badge>
             </InlineStack>
           </InlineStack>
