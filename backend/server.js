@@ -14,7 +14,7 @@ const adminRoutes = require('./routes/admin');
 
 const app = express();
 
-// 1. CORS — FIRST
+// STEP 1: CORS — FIRST (Must be first for production preflight)
 app.use(cors({
   origin: [
     "https://shopify-emails.netlify.app",
@@ -26,38 +26,33 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
+
+// Handle preflight OPTIONS requests for all routes
 app.options("*", cors());
 
-// 2. Body parser
-app.use(express.json({ limit: '50mb' }));
+// STEP 2: Body parser (AFTER CORS)
+app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// 3. Request logger
+// STEP 3: Request logger
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
-  console.log(`${req.method} ${req.path}`);
+  console.log(`[${timestamp}] ${req.method} ${req.path}`);
   next();
 });
 
-// 4. Health check — BEFORE other routes
+// STEP 4: Health check
 app.get("/", (req, res) => {
-  res.json({ 
-    status: "ok",
-    message: "Server is running",
-    time: new Date().toISOString(),
-    env: process.env.NODE_ENV
-  });
+  res.json({ status: "ok", server: "running" });
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({ 
-    status: "ok",
-    message: "Server is running"
-  });
+  res.json({ status: "ok" });
 });
 
-// 5. ALL ROUTES
+// STEP 5: ALL ROUTES
+// We use the full routes directly as they contain internal path prefixes
 app.use(storeRoutes);
 app.use(csvRoutes);
 app.use(invoiceRoutes);
@@ -65,29 +60,37 @@ app.use(logRoutes);
 app.use(authRoutes);
 app.use(adminRoutes);
 
-// 6. Error handler — LAST
+// STEP 6: Serve frontend in production (Netlify handles frontend, but keep for fallback)
+const fs = require('fs');
+const frontendBuildPath = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(frontendBuildPath)) {
+  app.use(express.static(frontendBuildPath));
+}
+
+// STEP 7: Error handler — LAST
 app.use((err, req, res, next) => {
   console.error("Server Error:", err.message);
-  res.status(500).json({ 
-    error: err.message 
-  });
+  res.status(500).json({ error: err.message });
 });
 
-// 7. Start server
+// STEP 8: Crash handlers — prevent 502 crashing on Railway
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err.message);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled Rejection:", err.message);
+});
+
+// STEP 9: Start server (Railway requires PORT and 0.0.0.0)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`
-╔════════════════════════════════════╗
-║  Server running on port ${PORT}       ║
-║  Host: 0.0.0.0 (Railway Required)   ║
-╠════════════════════════════════════╣
-║  Routes available:                 ║
-║  GET  /api/health                  ║
-║  POST /api/store/add               ║
-║  POST /api/invoice/send-bulk       ║
-║  GET  /api/logs                    ║
-╚════════════════════════════════════╝
-  `);
+    console.log(`
+    ╔════════════════════════════════════╗
+    ║  Server running on port ${PORT}       ║
+    ║  Host: 0.0.0.0 (Railway Mesh)       ║
+    ╚════════════════════════════════════╝
+    `);
 });
 
 module.exports = app;

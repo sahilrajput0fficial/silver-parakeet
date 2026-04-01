@@ -126,7 +126,7 @@ export function clearLogs() {
 export function checkSendProgress(rows, shopDomain) {
   return apiFetch('/api/invoice/check-progress', {
     method: 'POST',
-    body: JSON.stringify({ rows, shop_domain: shopDomain })
+    body: JSON.stringify({ rows }) // shop_domain handled by backend pool
   });
 }
 
@@ -162,7 +162,7 @@ export function sendBulkInvoices(rows, subject, customMessage, shopDomain, onEve
       credentials: 'include',
       body: JSON.stringify({
         rows,
-        shop_domain: shopDomain,
+        // Backend handles shop_domain via pool internally now
         session_id: sessionId || undefined,
         mode: mode || undefined
       })

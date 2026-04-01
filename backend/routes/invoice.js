@@ -141,16 +141,17 @@ router.post('/api/store/test', authenticateToken, async (req, res) => {
 
 /* ─── Check progress for resume detection ─── */
 router.post('/api/invoice/check-progress', authenticateToken, (req, res) => {
-  const { rows, shop_domain } = req.body;
-
-  if (!rows || !Array.isArray(rows) || rows.length === 0) {
-    return res.status(400).json({ error: 'No rows provided' });
+  let effectiveShopDomain = shop_domain;
+  
+  if (!effectiveShopDomain || effectiveShopDomain === 'API_POOL') {
+    const currentAPI = getNextAvailableAPI(req.user.id);
+    if (!currentAPI) {
+      return res.status(400).json({ error: 'shop_domain is required or no active API found in pool' });
+    }
+    effectiveShopDomain = currentAPI.shop_domain;
   }
-  if (!shop_domain) {
-    return res.status(400).json({ error: 'shop_domain is required' });
-  }
 
-  const sessionId = generateSessionId(rows, shop_domain, req.user.id);
+  const sessionId = generateSessionId(rows, effectiveShopDomain, req.user.id);
   const progress = checkExistingProgress(sessionId);
 
   return res.json({
@@ -208,7 +209,8 @@ router.post('/api/invoice/send-bulk', authenticateToken, async (req, res) => {
   }
 
   // Use the shop_domain from request OR the first available API's domain
-  const effectiveShopDomain = shop_domain || currentAPI.shop_domain;
+  // Correcting 'API_POOL' to real Shopify domain
+  const effectiveShopDomain = (shop_domain === 'API_POOL' || !shop_domain) ? currentAPI.shop_domain : shop_domain;
 
   // Pre-flight scope check skipped since we rely on the API pool dynamically.
   // We do not abort the whole request for a single API scope failure, 
