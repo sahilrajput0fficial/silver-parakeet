@@ -1,25 +1,26 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const { authenticateToken } = require('../middleware/authMiddleware');
 const {
   addStore,
   getAllStores,
   deleteAllStores,
   deleteStoreByDomain,
   resetAllUsage,
-  getStoreByDomain
+  getStoreByDomain,
+  logActivity
 } = require('../db/database');
 const {
   buildAuthUrl,
   exchangeCodeForToken,
-  verifyHmac,
   validateAccessToken
 } = require('../services/shopifyAuth');
 
 const SCOPES = process.env.SHOPIFY_SCOPES || 'write_draft_orders,read_draft_orders,write_customers,read_customers,write_orders,read_orders';
 
 /* ─── Add a store (direct token or start OAuth) ─── */
-router.post('/api/store/add', async (req, res) => {
+router.post('/api/store/add', authenticateToken, async (req, res) => {
   try {
     const { api_name, shop_domain, client_id, client_secret, access_token, max_orders } = req.body;
 
@@ -38,7 +39,8 @@ router.post('/api/store/add', async (req, res) => {
         return res.status(400).json({ error: `Invalid access token: ${err.message}` });
       }
 
-      const result = addStore(api_name, cleanDomain, access_token, max_orders || 100);
+      const result = addStore(req.user.id, api_name, cleanDomain, access_token, max_orders || 100);
+      logActivity(req.user.id, 'API key added', `Added store ${cleanDomain} directly`, req.ip);
       return res.json({ success: true, message: 'Store added with direct token', ...result });
     }
 
@@ -54,6 +56,7 @@ router.post('/api/store/add', async (req, res) => {
     // Store OAuth state temporarily (in-memory for simplicity)
     if (!global._oauthStates) global._oauthStates = {};
     global._oauthStates[state] = {
+      user_id: req.user.id,
       api_name,
       shop_domain: cleanDomain,
       client_id,
@@ -78,7 +81,7 @@ router.post('/api/store/add', async (req, res) => {
 });
 
 /* ─── Reconnect Store (delete old token → restart OAuth) ─── */
-router.post('/api/store/reconnect', async (req, res) => {
+router.post('/api/store/reconnect', authenticateToken, async (req, res) => {
   try {
     const { shop_domain, client_id, client_secret } = req.body;
 
@@ -91,12 +94,16 @@ router.post('/api/store/reconnect', async (req, res) => {
     const cleanDomain = shop_domain.replace(/^https?:\/\//, '').replace(/\/$/, '');
 
     // Get existing store info before deleting
-    const existingStore = getStoreByDomain(cleanDomain);
-    const apiName = existingStore ? existingStore.api_name : cleanDomain;
-    const maxOrders = existingStore ? existingStore.max_orders : 100;
+    const existingStore = getStoreByDomain(cleanDomain, req.user.id, req.user.role);
+    if (!existingStore) {
+      return res.status(404).json({ error: 'Store not found or no permission' });
+    }
+
+    const apiName = existingStore.api_name;
+    const maxOrders = existingStore.max_orders;
 
     // Delete old token
-    deleteStoreByDomain(cleanDomain);
+    deleteStoreByDomain(cleanDomain, req.user.id, req.user.role);
     console.log(`[Reconnect] Deleted old token for ${cleanDomain}`);
 
     // Generate state for CSRF protection
@@ -106,6 +113,7 @@ router.post('/api/store/reconnect', async (req, res) => {
     // Store OAuth state temporarily
     if (!global._oauthStates) global._oauthStates = {};
     global._oauthStates[state] = {
+      user_id: req.user.id,
       api_name: apiName,
       shop_domain: cleanDomain,
       client_id,
@@ -116,9 +124,6 @@ router.post('/api/store/reconnect', async (req, res) => {
     };
 
     const authUrl = buildAuthUrl(cleanDomain, client_id, SCOPES, redirectUri, state);
-    console.log(`[Reconnect] OAuth URL generated for ${cleanDomain}`);
-    console.log(`[Reconnect] Scopes requested: ${SCOPES}`);
-
     return res.json({
       success: true,
       auth_url: authUrl,
@@ -132,20 +137,14 @@ router.post('/api/store/reconnect', async (req, res) => {
 });
 
 /* ─── Verify draft_orders scope on token ─── */
-router.post('/api/store/verify-scopes', async (req, res) => {
+router.post('/api/store/verify-scopes', authenticateToken, async (req, res) => {
   try {
     const { shop_domain } = req.body;
+    if (!shop_domain) return res.status(400).json({ error: 'shop_domain is required' });
 
-    if (!shop_domain) {
-      return res.status(400).json({ error: 'shop_domain is required' });
-    }
-
-    const store = getStoreByDomain(shop_domain);
+    const store = getStoreByDomain(shop_domain, req.user.id, req.user.role);
     if (!store) {
-      return res.status(404).json({
-        valid: false,
-        error: `Store not found: ${shop_domain}. Please add the store first.`
-      });
+      return res.status(404).json({ valid: false, error: 'Store not found or access denied.' });
     }
 
     const fetch = require('node-fetch');
@@ -160,35 +159,16 @@ router.post('/api/store/verify-scopes', async (req, res) => {
       }
     });
 
-    if (response.status === 403) {
-      return res.json({
-        valid: false,
-        error: 'write_draft_orders scope is missing. Click "Reconnect Store" to reauthorize with correct scopes.'
-      });
-    }
-
-    if (response.status === 401) {
-      return res.json({
-        valid: false,
-        error: 'Access token is invalid or expired. Click "Reconnect Store" to get a new token.'
-      });
-    }
-
+    if (response.status === 403) return res.json({ valid: false, error: 'write_draft_orders scope is missing. Click "Reconnect Store".' });
+    if (response.status === 401) return res.json({ valid: false, error: 'Access token is invalid or expired. Click "Reconnect Store".' });
     if (!response.ok) {
       const errText = await response.text();
-      return res.json({
-        valid: false,
-        error: `Scope check failed (${response.status}): ${errText}`
-      });
+      return res.json({ valid: false, error: `Scope check failed (${response.status}): ${errText}` });
     }
 
-    return res.json({
-      valid: true,
-      message: 'write_draft_orders scope is approved ✓'
-    });
+    return res.json({ valid: true, message: 'write_draft_orders scope is approved ✓' });
 
   } catch (error) {
-    console.error('Verify scopes error:', error);
     res.status(500).json({ valid: false, error: error.message });
   }
 });
@@ -213,8 +193,9 @@ router.get('/api/auth/callback', async (req, res) => {
       code
     );
 
-    // Save store
-    addStore(oauthData.api_name, oauthData.shop_domain, accessToken, oauthData.max_orders);
+    // Save store with user_id!
+    addStore(oauthData.user_id, oauthData.api_name, oauthData.shop_domain, accessToken, oauthData.max_orders);
+    logActivity(oauthData.user_id, 'API key added', `Connected store ${oauthData.shop_domain} via OAuth`, req.ip);
 
     // Redirect back to app dashboard
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -228,34 +209,31 @@ router.get('/api/auth/callback', async (req, res) => {
 });
 
 /* ─── List all stores ─── */
-router.get('/api/stores', (req, res) => {
+router.get('/api/stores', authenticateToken, (req, res) => {
   try {
-    const stores = getAllStores();
+    const stores = getAllStores(req.user.id, req.user.role);
     res.json({ stores });
   } catch (error) {
-    console.error('List stores error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 /* ─── Delete all stores ─── */
-router.delete('/api/stores', (req, res) => {
+router.delete('/api/stores', authenticateToken, (req, res) => {
   try {
-    deleteAllStores();
-    res.json({ success: true, message: 'All stores deleted' });
+    deleteAllStores(req.user.id, req.user.role);
+    res.json({ success: true, message: 'Stores deleted' });
   } catch (error) {
-    console.error('Delete stores error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 /* ─── Reset usage counters ─── */
-router.post('/api/usage/reset', (req, res) => {
+router.post('/api/usage/reset', authenticateToken, (req, res) => {
   try {
-    resetAllUsage();
+    resetAllUsage(req.user.id, req.user.role);
     res.json({ success: true, message: 'Usage counters reset' });
   } catch (error) {
-    console.error('Reset usage error:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -357,7 +357,7 @@ export default function InvoiceTable({ rows, shopDomain, onComplete, onScopeErro
               Order Queue ({rows.length} orders)
             </Text>
             <Text variant="bodySm" tone="subdued">
-              1 second gap between each email. {rows.length} emails × 1s = ~{Math.ceil((rows.length * 2) / 60)} minutes
+              2 second gap between each email. {rows.length} emails × 2s = ~{Math.ceil((rows.length * 2) / 60)} minutes
             </Text>
           </BlockStack>
           <Button variant="tertiary" tone="critical" onClick={handleClearHistory} disabled={sending}>

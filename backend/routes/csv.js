@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const path = require('path');
+const { authenticateToken } = require('../middleware/authMiddleware');
+const { logActivity } = require('../db/database');
 
 const REQUIRED_COLUMNS = [
   'email', 'first_name', 'last_name', 'phone',
@@ -9,7 +11,7 @@ const REQUIRED_COLUMNS = [
 ];
 
 /* ─── Validate & process uploaded CSV rows ─── */
-router.post('/api/csv/upload', (req, res) => {
+router.post('/api/csv/upload', authenticateToken, (req, res) => {
   try {
     const { rows } = req.body;
 
@@ -64,6 +66,8 @@ router.post('/api/csv/upload', (req, res) => {
         });
       }
     });
+
+    logActivity(req.user.id, 'CSV Uploaded', `Uploaded a CSV with ${validRows.length} valid rows out of ${rows.length}`, req.ip);
 
     res.json({
       rows: validRows,

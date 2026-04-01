@@ -18,8 +18,12 @@ import CsvUploadPanel from '../components/CsvUploadPanel.jsx';
 import InvoiceTable from '../components/InvoiceTable.jsx';
 import LogViewer from '../components/LogViewer.jsx';
 import { getStores, testStoreConnection, reconnectStore } from '../utils/apiClient';
+import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 
 export default function Dashboard() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [stores, setStores] = useState([]);
   const [selectedStore, setSelectedStore] = useState('');
   const [orderRows, setOrderRows] = useState([]);
@@ -132,9 +136,22 @@ export default function Dashboard() {
     setScopeError(errorMessage);
   };
 
+  const primaryAction = user?.role === 'admin' 
+    ? { content: 'Admin Dashboard', onAction: () => navigate('/admin') } 
+    : undefined;
+
   return (
-    <Page title="Shopify Invoice Dashboard">
+    <Page 
+      title={`Shopify Invoice Dashboard — Welcome, ${user?.username}`}
+      primaryAction={primaryAction}
+      secondaryActions={[
+        { content: 'Logout', onAction: logout, destructive: true }
+      ]}
+    >
       <BlockStack gap="600">
+        {user?.daily_limit && (
+           <Banner status="info">Your daily limit is set to {user.daily_limit} emails.</Banner>
+        )}
         {authMessage && (
           <Banner
             tone={authMessage.type}

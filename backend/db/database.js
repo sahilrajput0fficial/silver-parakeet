@@ -243,6 +243,30 @@ function logActivity(user_id, action, details, ip_address) {
   }
 }
 
+// --- Usage & Daily Limits ---
+function checkDailyLimit(user_id) {
+  const user = db.prepare('SELECT daily_limit FROM users WHERE id = ?').get(user_id);
+  if (!user || user.daily_limit === null) return { passes: true, limit: null, sent_today: 0 }; // No limit (Admin or unlimited member)
+
+  const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const usage = db.prepare('SELECT emails_sent_today FROM usage_logs WHERE user_id = ? AND date = ?').get(user_id, date);
+  const sentToday = usage ? usage.emails_sent_today : 0;
+
+  if (sentToday >= user.daily_limit) {
+    return { passes: false, limit: user.daily_limit, sent_today: sentToday };
+  }
+  return { passes: true, limit: user.daily_limit, sent_today: sentToday };
+}
+
+function incrementDailyLimit(user_id) {
+  const date = new Date().toISOString().split('T')[0];
+  db.prepare(`
+    INSERT INTO usage_logs (user_id, date, emails_sent_today) 
+    VALUES (?, ?, 1) 
+    ON CONFLICT(user_id, date) DO UPDATE SET emails_sent_today = emails_sent_today + 1
+  `).run(user_id, date);
+}
+
 // --- Send Progress Operations (RESUME FEATURE) ---
 
 /**
@@ -377,6 +401,8 @@ module.exports = {
   incrementUsage,
   resetAllUsage,
   logActivity,
+  checkDailyLimit,
+  incrementDailyLimit,
   // Resume feature exports
   generateSessionId,
   checkExistingProgress,

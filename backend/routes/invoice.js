@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const fetch = require('node-fetch');
+const { authenticateToken } = require('../middleware/authMiddleware');
 const {
   getStoreByDomain,
   incrementUsage,
@@ -9,7 +10,10 @@ const {
   initSessionRows,
   updateRowProgress,
   deleteSession,
-  clearAllSendHistory
+  clearAllSendHistory,
+  logActivity,
+  checkDailyLimit,
+  incrementDailyLimit
 } = require('../db/database');
 const { createDraftOrder } = require('../services/shopifyDraftOrder');
 const { completeDraftOrder } = require('../services/shopifyCompleteDraft');
@@ -91,14 +95,14 @@ async function verifyStoreEmailSettings(shopDomain, accessToken) {
 }
 
 /* ─── Test Connection ─── */
-router.post('/api/store/test', async (req, res) => {
+router.post('/api/store/test', authenticateToken, async (req, res) => {
   const { shop_domain } = req.body;
 
   if (!shop_domain) {
     return res.status(400).json({ error: 'shop_domain is required' });
   }
 
-  const store = getStoreByDomain(shop_domain);
+  const store = getStoreByDomain(shop_domain, req.user.id, req.user.role);
   if (!store) {
     return res.status(404).json({ error: `Store not found: ${shop_domain}` });
   }
@@ -136,7 +140,7 @@ router.post('/api/store/test', async (req, res) => {
 });
 
 /* ─── Check progress for resume detection ─── */
-router.post('/api/invoice/check-progress', (req, res) => {
+router.post('/api/invoice/check-progress', authenticateToken, (req, res) => {
   const { rows, shop_domain } = req.body;
 
   if (!rows || !Array.isArray(rows) || rows.length === 0) {
@@ -146,7 +150,7 @@ router.post('/api/invoice/check-progress', (req, res) => {
     return res.status(400).json({ error: 'shop_domain is required' });
   }
 
-  const sessionId = generateSessionId(rows, shop_domain);
+  const sessionId = generateSessionId(rows, shop_domain, req.user.id);
   const progress = checkExistingProgress(sessionId);
 
   return res.json({
@@ -166,17 +170,17 @@ router.post('/api/invoice/check-progress', (req, res) => {
 });
 
 /* ─── Delete session (Start Fresh) ─── */
-router.post('/api/invoice/delete-session', (req, res) => {
+router.post('/api/invoice/delete-session', authenticateToken, (req, res) => {
   const { session_id } = req.body;
   if (!session_id) return res.status(400).json({ error: 'session_id is required' });
 
-  deleteSession(session_id);
+  deleteSession(session_id, req.user.id, req.user.role);
   return res.json({ success: true, message: 'Session deleted.' });
 });
 
 /* ─── Clear ALL send history ─── */
-router.delete('/api/invoice/clear-history', (req, res) => {
-  clearAllSendHistory();
+router.delete('/api/invoice/clear-history', authenticateToken, (req, res) => {
+  clearAllSendHistory(req.user.id, req.user.role);
   return res.json({ success: true, message: 'All send history cleared.' });
 });
 
@@ -191,7 +195,7 @@ router.delete('/api/invoice/clear-history', (req, res) => {
    - send_invoice → Shopify email queue (guaranteed)
    - Complete → Order Confirmation notification (fast)
    ════════════════════════════════════════════════════ */
-router.post('/api/invoice/send-bulk', async (req, res) => {
+router.post('/api/invoice/send-bulk', authenticateToken, async (req, res) => {
   const { rows, shop_domain, session_id: clientSessionId, mode } = req.body;
 
   if (!rows || !Array.isArray(rows) || rows.length === 0) {
@@ -201,7 +205,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
     return res.status(400).json({ error: 'shop_domain is required' });
   }
 
-  const store = getStoreByDomain(shop_domain);
+  const store = getStoreByDomain(shop_domain, req.user.id, req.user.role);
   if (!store) {
     return res.status(404).json({ error: `Store not found: ${shop_domain}` });
   }
@@ -227,16 +231,16 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
   }
 
   // Session handling
-  const sessionId = clientSessionId || generateSessionId(rows, shop_domain);
+  const sessionId = clientSessionId || generateSessionId(rows, shop_domain, req.user.id);
   let progress = checkExistingProgress(sessionId);
 
   if (mode === 'fresh' && progress.isResume) {
-    deleteSession(sessionId);
+    deleteSession(sessionId, req.user.id, req.user.role);
     progress = { isResume: false, alreadySent: [], lastSentIndex: -1, totalSentSoFar: 0, totalFailed: 0, rows: [] };
   }
 
   if (!progress.isResume) {
-    initSessionRows(sessionId, shop_domain, rows);
+    initSessionRows(sessionId, shop_domain, rows, req.user.id);
   }
 
   // Verify store
@@ -265,6 +269,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
 
   logger.info('=== BULK SEND START ===');
   logger.info(`Session: ${sessionId} | Total: ${rows.length} | Resume: ${progress.isResume} | Already sent: ${alreadySentCount}`);
+  logActivity(req.user.id, 'Bulk Send Started', `Started bulk send for ${rows.length} rows on ${store.shop_domain}`, req.ip);
 
   let sentCount = alreadySentCount;
   let failedCount = 0;
@@ -293,6 +298,16 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
     }
 
     // ─── Process this row ───
+    const dailyCheck = checkDailyLimit(req.user.id);
+    if (!dailyCheck.passes) {
+      res.write(`data: ${JSON.stringify({
+        type: 'error',
+        message: `Daily limit reached (${dailyCheck.limit}/${dailyCheck.limit}). Resets tomorrow at midnight.`
+      })}\n\n`);
+      logger.error('BulkSend', `Daily limit reached for user ${req.user.username}`);
+      break; 
+    }
+
     let status = 'Failed';
     let draftOrderId = null;
     let realOrderId = null;
@@ -340,6 +355,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
         success = true;
         sentCount++;
         incrementUsage(store.shop_domain);
+        incrementDailyLimit(req.user.id);
 
         // Save to database
         updateRowProgress(sessionId, i, 'sent', String(realOrderId), String(draftOrderId), null);
@@ -389,9 +405,9 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
     })}\n\n`);
 
     // 2 seconds delay between each row
-    if (i < rows.length - 2) {
+    if (i < rows.length - 1) {
       console.log(`Waiting 2 seconds before next email...`);
-      console.log(`Next email: ${rows[i + 2]?.email}`);
+      console.log(`Next email: ${rows[i + 1]?.email}`);
       
       res.write(`data: ${JSON.stringify({
         type: 'waiting',
@@ -399,7 +415,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
       })}\n\n`);
 
       await new Promise(resolve => 
-        setTimeout(resolve, 10000)
+        setTimeout(resolve, 2000)
       );
     }
   }
@@ -409,6 +425,7 @@ router.post('/api/invoice/send-bulk', async (req, res) => {
 
   logger.info('=== BULK SEND COMPLETE ===');
   logger.info(`Total: ${rows.length} | Skipped: ${skippedCount} | Newly Sent: ${newlySent} | Failed: ${failedCount} | Time: ${timeTaken}s`);
+  logActivity(req.user.id, 'Bulk Send Completed', `Completed bulk send for ${rows.length} rows on ${store.shop_domain}. ${newlySent} sent, ${failedCount} failed.`, req.ip);
 
   res.write(`data: ${JSON.stringify({
     type: 'complete',

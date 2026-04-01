@@ -3,11 +3,14 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const cookieParser = require('cookie-parser');
 
 const storeRoutes = require('./routes/stores');
 const csvRoutes = require('./routes/csv');
 const invoiceRoutes = require('./routes/invoice');
 const logRoutes = require('./routes/logs');
+const authRoutes = require('./routes/auth');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,6 +22,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 /* ─── Request logging ─── */
 app.use((req, res, next) => {
@@ -32,6 +36,8 @@ app.use(storeRoutes);
 app.use(csvRoutes);
 app.use(invoiceRoutes);
 app.use(logRoutes);
+app.use(authRoutes);
+app.use(adminRoutes);
 
 /* ─── Serve frontend in production ─── */
 const fs = require('fs');

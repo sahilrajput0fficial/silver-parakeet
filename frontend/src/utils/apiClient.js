@@ -7,6 +7,7 @@ async function apiFetch(endpoint, options = {}) {
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
   const config = {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     ...options
   };
 
@@ -131,6 +132,7 @@ export function sendBulkInvoices(rows, subject, customMessage, shopDomain, onEve
     fetch(`${API_BASE}/api/invoice/send-bulk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({
         rows,
         shop_domain: shopDomain,
