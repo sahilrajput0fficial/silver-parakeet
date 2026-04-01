@@ -23,7 +23,12 @@ export default function Login() {
         navigate('/');
       }
     } catch (err) {
-      setError(err.response?.data?.error || 'Login failed');
+      console.error('Login error:', err);
+      if (!err.response) {
+        setError('Network Error: Cannot connect to server at http://localhost:3000');
+      } else {
+        setError(err.response?.data?.error || 'Login failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -38,7 +43,7 @@ export default function Login() {
               <FormLayout>
                 <Text variant="headingXl" as="h1">Sign in</Text>
                 
-                {error && <Banner status="critical">{error}</Banner>}
+                {error && <Banner tone="critical" onDismiss={() => setError('')}>{error}</Banner>}
 
                 <TextField
                   label="Username"
