@@ -7,13 +7,12 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Set default api config
-  // Set default api config
-  const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3000';
+  // Default Axios configuration
+  const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
   axios.defaults.baseURL = API_BASE;
   axios.defaults.withCredentials = true;
 
-  // Setup Axios interceptor to add bearer token to headers automatically
+  // Axios interceptor for Authorization header
   useEffect(() => {
     const interceptor = axios.interceptors.request.use((config) => {
       const token = localStorage.getItem('token');
@@ -43,12 +42,21 @@ export function AuthProvider({ children }) {
     fetchUser();
   }, []);
 
-  const login = async (username, password) => {
-    const res = await axios.post('/api/auth/login', { username, password });
+  const login = async (email, password) => {
+    const res = await axios.post('/api/auth/login', { email, password });
     if (res.data.token) {
       localStorage.setItem('token', res.data.token);
     }
     setUser(res.data.user);
+    return res.data;
+  };
+
+  const signup = async (email, password, username) => {
+    const res = await axios.post('/api/auth/signup', { email, password, username });
+    if (res.data.token) {
+      localStorage.setItem('token', res.data.token);
+      setUser(res.data.user);
+    }
     return res.data;
   };
 
@@ -66,7 +74,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, changePassword }}>
+    <AuthContext.Provider value={{ user, loading, login, signup, logout, changePassword }}>
       {children}
     </AuthContext.Provider>
   );

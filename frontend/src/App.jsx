@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import Dashboard from './pages/Dashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import Login from './pages/Login';
+import Signup from './pages/Signup';
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user, loading } = useAuth();
@@ -18,22 +19,17 @@ function ProtectedRoute({ children, adminOnly = false }) {
     return <Navigate to="/" />;
   }
 
-  // Force password change for default admin
-  if (user.force_change) {
-    // Only allow them to see the login page (or a change password modal built into login)
-    // Actually, we can just handle it in the Login/Dashboard
-  }
-
   return children;
 }
 
 export default function App() {
   return (
-    <AppProvider i18n={enTranslations}>
-      <AuthProvider>
-        <BrowserRouter>
+    <BrowserRouter>
+      <AppProvider i18n={enTranslations}>
+        <AuthProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
             <Route 
               path="/" 
               element={
@@ -51,8 +47,8 @@ export default function App() {
               } 
             />
           </Routes>
-        </BrowserRouter>
-      </AuthProvider>
-    </AppProvider>
+        </AuthProvider>
+      </AppProvider>
+    </BrowserRouter>
   );
 }

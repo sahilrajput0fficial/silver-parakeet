@@ -3,14 +3,14 @@ const router = express.Router();
 const crypto = require('crypto');
 const { authenticateToken } = require('../middleware/authMiddleware');
 const {
+  supabase,
   addStore,
   getAllStores,
   deleteAllStores,
   deleteStoreByDomain,
   resetAllUsage,
   getStoreByDomain,
-  logActivity,
-  db
+  logActivity
 } = require('../db/database');
 const {
   buildAuthUrl,
@@ -40,8 +40,8 @@ router.post('/api/store/add', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: `Invalid access token: ${err.message}` });
       }
 
-      const result = addStore(req.user.id, api_name, cleanDomain, access_token, max_orders || 100);
-      logActivity(req.user.id, 'API key added', `Added store ${cleanDomain} directly`, req.ip);
+      const result = await addStore(req.user.id, api_name, cleanDomain, access_token, max_orders || 100);
+      await logActivity(req.user.id, 'API key added', `Added store ${cleanDomain} directly`, req.ip);
       return res.json({ success: true, message: 'Store added with direct token', ...result });
     }
 
@@ -50,11 +50,9 @@ router.post('/api/store/add', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Provide either access_token OR client_id + client_secret' });
     }
 
-    // Generate state for CSRF protection
     const state = crypto.randomBytes(16).toString('hex');
     const redirectUri = `${process.env.APP_URL || 'http://localhost:3000'}/api/auth/callback`;
 
-    // Store OAuth state temporarily (in-memory for simplicity)
     if (!global._oauthStates) global._oauthStates = {};
     global._oauthStates[state] = {
       user_id: req.user.id,
@@ -66,7 +64,6 @@ router.post('/api/store/add', authenticateToken, async (req, res) => {
       created_at: Date.now()
     };
 
-    // Clean up states older than 10 minutes
     const tenMinutesAgo = Date.now() - 600000;
     for (const [key, val] of Object.entries(global._oauthStates)) {
       if (val.created_at < tenMinutesAgo) delete global._oauthStates[key];
@@ -81,21 +78,18 @@ router.post('/api/store/add', authenticateToken, async (req, res) => {
   }
 });
 
-/* ─── Reconnect Store (delete old token → restart OAuth) ─── */
+/* ─── Reconnect Store ─── */
 router.post('/api/store/reconnect', authenticateToken, async (req, res) => {
   try {
     const { shop_domain, client_id, client_secret } = req.body;
 
     if (!shop_domain || !client_id || !client_secret) {
-      return res.status(400).json({
-        error: 'shop_domain, client_id, and client_secret are required for reconnect'
-      });
+      return res.status(400).json({ error: 'shop_domain, client_id, and client_secret are required for reconnect' });
     }
 
     const cleanDomain = shop_domain.replace(/^https?:\/\//, '').replace(/\/$/, '');
 
-    // Get existing store info before deleting
-    const existingStore = getStoreByDomain(cleanDomain, req.user.id, req.user.role);
+    const existingStore = await getStoreByDomain(cleanDomain, req.user.id, req.user.role);
     if (!existingStore) {
       return res.status(404).json({ error: 'Store not found or no permission' });
     }
@@ -103,15 +97,12 @@ router.post('/api/store/reconnect', authenticateToken, async (req, res) => {
     const apiName = existingStore.api_name;
     const maxOrders = existingStore.max_orders;
 
-    // Delete old token
-    deleteStoreByDomain(cleanDomain, req.user.id, req.user.role);
+    await deleteStoreByDomain(cleanDomain, req.user.id, req.user.role);
     console.log(`[Reconnect] Deleted old token for ${cleanDomain}`);
 
-    // Generate state for CSRF protection
     const state = crypto.randomBytes(16).toString('hex');
     const redirectUri = `${process.env.APP_URL || 'http://localhost:3000'}/api/auth/callback`;
 
-    // Store OAuth state temporarily
     if (!global._oauthStates) global._oauthStates = {};
     global._oauthStates[state] = {
       user_id: req.user.id,
@@ -137,13 +128,13 @@ router.post('/api/store/reconnect', authenticateToken, async (req, res) => {
   }
 });
 
-/* ─── Verify draft_orders scope on token ─── */
+/* ─── Verify draft_orders scope ─── */
 router.post('/api/store/verify-scopes', authenticateToken, async (req, res) => {
   try {
     const { shop_domain } = req.body;
     if (!shop_domain) return res.status(400).json({ error: 'shop_domain is required' });
 
-    const store = getStoreByDomain(shop_domain, req.user.id, req.user.role);
+    const store = await getStoreByDomain(shop_domain, req.user.id, req.user.role);
     if (!store) {
       return res.status(404).json({ valid: false, error: 'Store not found or access denied.' });
     }
@@ -160,8 +151,8 @@ router.post('/api/store/verify-scopes', authenticateToken, async (req, res) => {
       }
     });
 
-    if (response.status === 403) return res.json({ valid: false, error: 'write_draft_orders scope is missing. Click "Reconnect Store".' });
-    if (response.status === 401) return res.json({ valid: false, error: 'Access token is invalid or expired. Click "Reconnect Store".' });
+    if (response.status === 403) return res.json({ valid: false, error: 'write_draft_orders scope is missing.' });
+    if (response.status === 401) return res.json({ valid: false, error: 'Access token is invalid or expired.' });
     if (!response.ok) {
       const errText = await response.text();
       return res.json({ valid: false, error: `Scope check failed (${response.status}): ${errText}` });
@@ -177,16 +168,15 @@ router.post('/api/store/verify-scopes', authenticateToken, async (req, res) => {
 /* ─── OAuth callback ─── */
 router.get('/api/auth/callback', async (req, res) => {
   try {
-    const { code, state, shop, hmac } = req.query;
+    const { code, state } = req.query;
 
     if (!code || !state || !global._oauthStates || !global._oauthStates[state]) {
-      return res.status(400).send('Invalid OAuth callback: missing or expired state');
+      return res.status(400).send('Invalid OAuth callback');
     }
 
     const oauthData = global._oauthStates[state];
     delete global._oauthStates[state];
 
-    // Exchange code for token
     const accessToken = await exchangeCodeForToken(
       oauthData.shop_domain,
       oauthData.client_id,
@@ -194,11 +184,9 @@ router.get('/api/auth/callback', async (req, res) => {
       code
     );
 
-    // Save store with user_id!
-    addStore(oauthData.user_id, oauthData.api_name, oauthData.shop_domain, accessToken, oauthData.max_orders);
-    logActivity(oauthData.user_id, 'API key added', `Connected store ${oauthData.shop_domain} via OAuth`, req.ip);
+    await addStore(oauthData.user_id, oauthData.api_name, oauthData.shop_domain, accessToken, oauthData.max_orders);
+    await logActivity(oauthData.user_id, 'API key added', `Connected store ${oauthData.shop_domain} via OAuth`, req.ip);
 
-    // Redirect back to app dashboard
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const authParam = oauthData.is_reconnect ? 'reconnected' : 'success';
     res.redirect(frontendUrl + `/?auth=${authParam}&shop=` + encodeURIComponent(oauthData.shop_domain));
@@ -210,9 +198,9 @@ router.get('/api/auth/callback', async (req, res) => {
 });
 
 /* ─── List all stores ─── */
-router.get('/api/stores', authenticateToken, (req, res) => {
+router.get('/api/stores', authenticateToken, async (req, res) => {
   try {
-    const stores = getAllStores(req.user.id, req.user.role);
+    const stores = await getAllStores(req.user.id, req.user.role);
     res.json({ stores });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -220,9 +208,9 @@ router.get('/api/stores', authenticateToken, (req, res) => {
 });
 
 /* ─── Delete all stores ─── */
-router.delete('/api/stores', authenticateToken, (req, res) => {
+router.delete('/api/stores', authenticateToken, async (req, res) => {
   try {
-    deleteAllStores(req.user.id, req.user.role);
+    await deleteAllStores(req.user.id, req.user.role);
     res.json({ success: true, message: 'Stores deleted' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -230,9 +218,9 @@ router.delete('/api/stores', authenticateToken, (req, res) => {
 });
 
 /* ─── Reset usage counters ─── */
-router.post('/api/usage/reset', authenticateToken, (req, res) => {
+router.post('/api/usage/reset', authenticateToken, async (req, res) => {
   try {
-    resetAllUsage(req.user.id, req.user.role);
+    await resetAllUsage(req.user.id, req.user.role);
     res.json({ success: true, message: 'Usage counters reset' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -240,29 +228,47 @@ router.post('/api/usage/reset', authenticateToken, (req, res) => {
 });
 
 /* ─── Auto API Switch Reset ─── */
-router.post('/api/store/:id/reset', authenticateToken, (req, res) => {
+router.post('/api/store/:id/reset', authenticateToken, async (req, res) => {
   try {
     const apiId = req.params.id;
-    if (req.user.role === 'admin') {
-      db.prepare('UPDATE stores SET usage_count = 0, is_exhausted = 0, is_active = 1 WHERE id = ?').run(apiId);
-    } else {
-      db.prepare('UPDATE stores SET usage_count = 0, is_exhausted = 0, is_active = 1 WHERE id = ? AND user_id = ?').run(apiId, req.user.id);
+    let query = supabase.from('stores').update({ 
+      usage_count: 0, 
+      is_exhausted: false, 
+      is_active: true 
+    }).eq('id', apiId);
+
+    if (req.user.role !== 'admin') {
+      query = query.eq('user_id', req.user.id);
     }
-    logActivity(req.user.id, 'API Reset', `Reset usage for API ID ${apiId}`, req.ip);
+
+    const { error } = await query;
+    if (error) throw error;
+
+    await logActivity(req.user.id, 'API Reset', `Reset usage for API ID ${apiId}`, req.ip);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.post('/api/stores/reset-all', authenticateToken, (req, res) => {
+router.post('/api/stores/reset-all', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role === 'admin') {
-      db.prepare('UPDATE stores SET usage_count = 0, is_exhausted = 0, is_active = 1').run();
+    let query = supabase.from('stores').update({ 
+      usage_count: 0, 
+      is_exhausted: false, 
+      is_active: true 
+    });
+
+    if (req.user.role !== 'admin') {
+      query = query.eq('user_id', req.user.id);
     } else {
-      db.prepare('UPDATE stores SET usage_count = 0, is_exhausted = 0, is_active = 1 WHERE user_id = ?').run(req.user.id);
+      query = query.neq('id', 0);
     }
-    logActivity(req.user.id, 'API Reset All', `Reset usage for all APIs`, req.ip);
+
+    const { error } = await query;
+    if (error) throw error;
+
+    await logActivity(req.user.id, 'API Reset All', `Reset usage for all APIs`, req.ip);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });

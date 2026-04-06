@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { db } = require('../db/database');
+const { supabase } = require('../db/database');
 const { authenticateToken, requireAdmin } = require('../middleware/authMiddleware');
 const fs = require('fs');
 const path = require('path');
@@ -15,11 +15,8 @@ router.get('/api/logs', authenticateToken, requireAdmin, (req, res) => {
     }
 
     const content = fs.readFileSync(LOG_FILE, 'utf8');
-
-    // Return last 200 lines only
     const lines = content.split('\n');
     const last200 = lines.slice(-200).join('\n');
-
     const fileSizeKB = (fs.statSync(LOG_FILE).size / 1024).toFixed(2);
 
     res.json({
@@ -44,30 +41,32 @@ router.delete('/api/logs', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
-module.exports = router;
-
 /* ─── GET /api/activity-logs ─── */
-router.get('/api/activity-logs', authenticateToken, (req, res) => {
+router.get('/api/activity-logs', authenticateToken, async (req, res) => {
   try {
-    let logs;
-    if (req.user.role === 'admin') {
-      logs = db.prepare(`
-        SELECT l.*, u.username as username 
-        FROM activity_logs l 
-        LEFT JOIN users u ON l.user_id = u.id 
-        ORDER BY l.created_at DESC LIMIT 200
-      `).all();
-    } else {
-      logs = db.prepare(`
-        SELECT l.*, u.username as username 
-        FROM activity_logs l 
-        LEFT JOIN users u ON l.user_id = u.id 
-        WHERE l.user_id = ? 
-        ORDER BY l.created_at DESC LIMIT 200
-      `).all(req.user.id);
+    let query = supabase
+      .from('activity_logs')
+      .select('*, profiles:user_id(username)') // Assuming a profiles table or handled via metadata
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (req.user.role !== 'admin') {
+      query = query.eq('user_id', req.user.id);
     }
-    res.json(logs);
+
+    const { data: logs, error } = await query;
+    if (error) throw error;
+
+    // Map username if needed (Supabase joins return nested objects)
+    const formattedLogs = logs.map(l => ({
+      ...l,
+      username: l.profiles?.username || l.user_id
+    }));
+
+    res.json(formattedLogs);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+module.exports = router;
