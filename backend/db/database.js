@@ -195,24 +195,12 @@ async function logActivity(user_id, action, details, ip_address) {
 }
 
 async function getNextAvailableAPI(user_id) {
-  const { data, error } = await supabase
-    .from('stores')
-    .select('*')
-    .eq('user_id', user_id)
-    .eq('is_active', true)
-    .eq('is_exhausted', false)
-    .lt('usage_count', supabase.from('stores').select('max_orders')) // This logic needs to be handled carefully in SQL
-    .order('priority', { ascending: true })
-    .limit(1);
-
-  // Correction: Supabase doesn't support column-to-column comparison directly in simple filters easily.
-  // We'll use a raw filter or fetch and filter. Actually, let's use a more explicit query.
-  
+  // First try the RPC (Most efficient)
   const { data: finalData, error: finalError } = await supabase.rpc('get_next_api', { p_user_id: user_id });
   
-  if (finalError) {
-    // Fallback if RPC not defined
-    const { data: stores } = await supabase
+  if (finalError || !finalData || finalData.length === 0) {
+    // Fallback: Fetch all active and filter in memory
+    const { data: stores, error } = await supabase
       .from('stores')
       .select('*')
       .eq('user_id', user_id)
@@ -220,13 +208,14 @@ async function getNextAvailableAPI(user_id) {
       .eq('is_exhausted', false)
       .order('priority', { ascending: true });
     
+    if (error || !stores) return null;
+    
     const api = stores.find(s => s.usage_count < s.max_orders);
     if (!api) return null;
     
     return { ...api, access_token: decrypt(api.access_token_encrypted, api.access_token_iv) };
   }
 
-  if (!finalData || finalData.length === 0) return null;
   const api = finalData[0];
   return { ...api, access_token: decrypt(api.access_token_encrypted, api.access_token_iv) };
 }
