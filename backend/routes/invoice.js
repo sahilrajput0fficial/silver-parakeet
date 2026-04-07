@@ -97,34 +97,39 @@ router.post('/api/store/test', authenticateToken, async (req, res) => {
 
 /* ─── Check progress ─── */
 router.post('/api/invoice/check-progress', authenticateToken, async (req, res) => {
-  const { rows, shop_domain } = req.body;
-  let effectiveShopDomain = shop_domain;
+  try {
+    const { rows, shop_domain } = req.body;
+    let effectiveShopDomain = shop_domain;
 
-  if (!effectiveShopDomain || effectiveShopDomain === 'API_POOL') {
-    const currentAPI = await getNextAvailableAPI(req.user.id);
-    if (!currentAPI) {
-      return res.status(400).json({ error: 'No active API found' });
+    if (!effectiveShopDomain || effectiveShopDomain === 'API_POOL') {
+      const currentAPI = await getNextAvailableAPI(req.user.id);
+      if (!currentAPI) {
+        return res.status(400).json({ error: 'No active API found' });
+      }
+      effectiveShopDomain = currentAPI.shop_domain;
     }
-    effectiveShopDomain = currentAPI.shop_domain;
+
+    const sessionId = generateSessionId(rows, effectiveShopDomain, req.user.id);
+    const progress = await checkExistingProgress(sessionId);
+
+    return res.json({
+      session_id: sessionId,
+      is_resume: progress.isResume,
+      already_sent: progress.alreadySent.length,
+      already_failed: progress.totalFailed,
+      remaining: rows.length - progress.alreadySent.length,
+      last_sent_index: progress.lastSentIndex,
+      total_rows: rows.length,
+      sent_indices: progress.alreadySent,
+      failed_indices: progress.failedRows || [],
+      sent_details: progress.rows
+        .filter(r => r.status === 'sent')
+        .map(r => ({ row_index: r.row_index, email: r.email, order_id: r.order_id }))
+    });
+  } catch (err) {
+    logger.error('checkProgress', err.message);
+    return res.status(500).json({ error: err.message });
   }
-
-  const sessionId = generateSessionId(rows, effectiveShopDomain, req.user.id);
-  const progress = await checkExistingProgress(sessionId);
-
-  return res.json({
-    session_id: sessionId,
-    is_resume: progress.isResume,
-    already_sent: progress.alreadySent.length,
-    already_failed: progress.totalFailed,
-    remaining: rows.length - progress.alreadySent.length,
-    last_sent_index: progress.lastSentIndex,
-    total_rows: rows.length,
-    sent_indices: progress.alreadySent,
-    failed_indices: progress.failedRows || [],
-    sent_details: progress.rows
-      .filter(r => r.status === 'sent')
-      .map(r => ({ row_index: r.row_index, email: r.email, order_id: r.order_id }))
-  });
 });
 
 /* ─── Delete session ─── */
@@ -151,6 +156,8 @@ router.post('/api/invoice/send-bulk', authenticateToken, async (req, res) => {
   }
 
   let currentAPI = await getNextAvailableAPI(req.user.id);
+  console.log(currentAPI);
+  
   if (!currentAPI) {
     return res.status(404).json({ error: 'No API available.' });
   }

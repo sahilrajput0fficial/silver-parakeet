@@ -20,9 +20,9 @@ router.get('/api/admin/users', authenticateToken, requireAdmin, async (req, res)
     const { data: progress } = await supabase.from('send_progress').select('user_id, status, updated_at').order('updated_at', { ascending: false });
 
     const userList = users.map(user => {
-      const userStores = stores.filter(s => s.user_id === user.id).length;
-      const userUsage = usage.find(u => u.user_id === user.id)?.emails_sent_today || 0;
-      const lastActivityRow = progress.find(p => p.user_id === user.id);
+      const userStores = (stores || []).filter(s => s.user_id === user.id).length;
+      const userUsage = (usage || []).find(u => u.user_id === user.id)?.emails_sent_today || 0;
+      const lastActivityRow = (progress || []).find(p => p.user_id === user.id);
 
       return {
         id: user.id,

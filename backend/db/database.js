@@ -105,9 +105,7 @@ async function getAllStores(user_id, role) {
     max_orders: row.max_orders,
     usage_count: row.usage_count,
     created_at: row.created_at,
-    is_active: row.is_active,
-    is_exhausted: row.is_exhausted,
-    priority: row.priority
+    is_exhausted: row.is_exhausted
   }));
 }
 
@@ -198,15 +196,14 @@ async function getNextAvailableAPI(user_id) {
   // First try the RPC (Most efficient)
   const { data: finalData, error: finalError } = await supabase.rpc('get_next_api', { p_user_id: user_id });
   
-  if (finalError || !finalData || finalData.length === 0) {
+  if (finalError || !finalData || (Array.isArray(finalData) && finalData.length === 0)) {
     // Fallback: Fetch all active and filter in memory
     const { data: stores, error } = await supabase
       .from('stores')
       .select('*')
       .eq('user_id', user_id)
-      .eq('is_active', true)
       .eq('is_exhausted', false)
-      .order('priority', { ascending: true });
+      .order('created_at', { ascending: true });
     
     if (error || !stores) return null;
     
@@ -216,7 +213,7 @@ async function getNextAvailableAPI(user_id) {
     return { ...api, access_token: decrypt(api.access_token_encrypted, api.access_token_iv) };
   }
 
-  const api = finalData[0];
+  const api = Array.isArray(finalData) ? finalData[0] : finalData;
   return { ...api, access_token: decrypt(api.access_token_encrypted, api.access_token_iv) };
 }
 
@@ -240,8 +237,7 @@ async function markAPIExhausted(api_id) {
   await supabase
     .from('stores')
     .update({ 
-      is_exhausted: true,
-      is_active: false
+      is_exhausted: true
     })
     .eq('id', api_id);
 }

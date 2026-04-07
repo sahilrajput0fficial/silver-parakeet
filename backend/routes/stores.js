@@ -233,8 +233,7 @@ router.post('/api/store/:id/reset', authenticateToken, async (req, res) => {
     const apiId = req.params.id;
     let query = supabase.from('stores').update({ 
       usage_count: 0, 
-      is_exhausted: false, 
-      is_active: true 
+      is_exhausted: false
     }).eq('id', apiId);
 
     if (req.user.role !== 'admin') {
@@ -255,8 +254,7 @@ router.post('/api/stores/reset-all', authenticateToken, async (req, res) => {
   try {
     let query = supabase.from('stores').update({ 
       usage_count: 0, 
-      is_exhausted: false, 
-      is_active: true 
+      is_exhausted: false
     });
 
     if (req.user.role !== 'admin') {
