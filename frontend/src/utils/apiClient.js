@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export function getHealth() {
   return apiFetch('/api/health');
@@ -21,6 +21,10 @@ async function apiFetch(endpoint, options = {}) {
   try {
     const response = await fetch(url, config);
     if (!response.ok) {
+      if (response.status === 401) {
+        // Handle unauthorized globally
+        localStorage.removeItem('token');
+      }
       const errorData = await response.json().catch(() => ({ error: response.statusText }));
       const err = new Error(errorData.error || `Server error ${response.status}: ${response.statusText}`);
       if (errorData.scope_error) err.scopeError = true;
@@ -162,7 +166,6 @@ export function sendBulkInvoices(rows, subject, customMessage, shopDomain, onEve
       credentials: 'include',
       body: JSON.stringify({
         rows,
-        // Backend handles shop_domain via pool internally now
         session_id: sessionId || undefined,
         mode: mode || undefined
       })

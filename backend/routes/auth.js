@@ -1,62 +1,126 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { db } = require('../db/database');
-const { authenticateToken, requireAdmin, JWT_SECRET } = require('../middleware/authMiddleware');
+const { supabase, logActivity } = require('../db/database');
+const { authenticateToken } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-router.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
-  
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password required' });
+// --- Auth Routes ---
+
+router.post('/api/auth/signup', async (req, res) => {
+  const { email, password, username } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password required' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!user) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
+  try {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          username: username || email.split('@')[0],
+          role: 'member'
+        }
+      }
+    });
 
-  const validPassword = bcrypt.compareSync(password, user.password);
-  if (!validPassword) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-
-  const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role, force_change: user.force_change_password },
-    JWT_SECRET,
-    { expiresIn: '24h' }
-  );
-
-  res.cookie('token', token, {
-    httpOnly: true,
-    secure: true, // MUST be true for SameSite=None
-    sameSite: 'none', // Required for cross-domain authenticated requests (e.g. Netlify to Railway)
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  });
-
-  // Log activity
-  db.prepare('INSERT INTO activity_logs (user_id, action, details, ip_address) VALUES (?, ?, ?, ?)').run(
-    user.id,
-    'login',
-    'User logged in',
-    req.ip
-  );
-
-  res.json({
-    success: true,
-    token: token,
-    user: {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      force_change: user.force_change_password
+    if (error) {
+      console.error('Signup Error:', error.message, error.status);
+      throw error;
     }
-  });
+    
+    // If verification is off, Supabase might return a session immediately
+    const session = data.session;
+    if (session) {
+      const token = session.access_token;
+      res.cookie('token', token, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        maxAge: 24 * 60 * 60 * 1000
+      });
+      
+      await logActivity(data.user.id, 'signup', 'User signed up (Auto-logged in)', req.ip);
+
+      return res.json({
+        success: true,
+        autoLogin: true,
+        token: token,
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+          username: data.user.user_metadata.username,
+          role: 'member'
+        }
+      });
+    }
+
+    // Standard signup (if verification is ON)
+    if (data.user) {
+      await logActivity(data.user.id, 'signup', 'User signed up', req.ip);
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: data.user?.id,
+        email: data.user?.email,
+        username: data.user?.user_metadata?.username,
+        role: data.user?.user_metadata?.role
+      }
+    });
+  } catch (err) {
+    console.error('Signup Exception:', err.message);
+    res.status(400).json({ error: err.message });
+  }
 });
 
-router.post('/api/auth/logout', (req, res) => {
+router.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password required' });
+  }
+
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (error) {
+      console.error('Login Error:', error.message, error.status);
+      throw error;
+    }
+
+    const token = data.session.access_token;
+    
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      maxAge: 24 * 60 * 60 * 1000
+    });
+
+    await logActivity(data.user.id, 'login', 'User logged in', req.ip);
+
+    res.json({
+      success: true,
+      token: token,
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        username: data.user.user_metadata.username || data.user.email.split('@')[0],
+        role: data.user.app_metadata?.role || data.user.user_metadata?.role || 'member'
+      }
+    });
+  } catch (err) {
+    console.error('Login Exception:', err.message);
+    res.status(401).json({ error: err.message });
+  }
+});
+
+router.post('/api/auth/logout', async (req, res) => {
+  await supabase.auth.signOut();
   res.clearCookie('token', {
     httpOnly: true,
     secure: true,
@@ -65,28 +129,27 @@ router.post('/api/auth/logout', (req, res) => {
   res.json({ success: true, message: 'Logged out' });
 });
 
-router.get('/api/auth/me', authenticateToken, (req, res) => {
-  const user = db.prepare('SELECT id, username, role, force_change_password, daily_limit FROM users WHERE id = ?').get(req.user.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    force_change: user.force_change_password,
-    daily_limit: user.daily_limit
-  });
+router.get('/api/auth/me', authenticateToken, async (req, res) => {
+  // authenticateToken already attached req.user
+  res.json(req.user);
 });
 
-router.post('/api/auth/change-password', authenticateToken, (req, res) => {
+router.post('/api/auth/change-password', authenticateToken, async (req, res) => {
   const { newPassword } = req.body;
   if (!newPassword || newPassword.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
 
-  const hash = bcrypt.hashSync(newPassword, 10);
-  db.prepare('UPDATE users SET password = ?, force_change_password = 0 WHERE id = ?').run(hash, req.user.id);
-  
-  res.json({ success: true });
+  try {
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword
+    });
+
+    if (error) throw error;
+    res.json({ success: true, message: 'Password updated' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

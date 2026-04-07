@@ -1,72 +1,70 @@
 import React, { useState } from 'react';
-import { Page, Card, Layout, FormLayout, TextField, Button, Text, Banner } from '@shopify/polaris';
-import { useNavigate } from 'react-router-dom';
+import { Page, Layout, Card, FormLayout, TextField, Button, Text, Link, Banner, Box } from '@shopify/polaris';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { login } = useAuth();
+  
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(location.state?.error || null);
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(location.state?.message || null);
 
   const handleLogin = async () => {
-    setError('');
     setLoading(true);
+    setError(null);
     try {
-      const data = await login(username, password);
-      // Let App.jsx ProtectedRoute handle redirect if not admin/member
-      if (data.user.role === 'admin') {
-        navigate('/admin');
-      } else {
+      const data = await login(email, password);
+      if (data.success) {
         navigate('/');
       }
     } catch (err) {
-      console.error('Login error:', err);
-      if (!err.response) {
-        setError('Network Error: Cannot connect to server at http://localhost:3000');
-      } else {
-        setError(err.response?.data?.error || 'Login failed');
-      }
+      setError(err.response?.data?.error || err.message || 'Login failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <div style={{ maxWidth: '400px', margin: '40px auto' }}>
+    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f6f6f7' }}>
+      <Page narrowWidth>
+        <Layout>
+          <Layout.Section>
             <Card sectioned>
-              <FormLayout>
-                <Text variant="headingXl" as="h1">Sign in</Text>
-                
-                {error && <Banner tone="critical" onDismiss={() => setError('')}>{error}</Banner>}
+              <Box padding="4" textAlign="center">
+                <Text variant="headingLg" as="h1">Login</Text>
+                <Text color="subdued">Access the Shopify Invoice Bulk Sender</Text>
+              </Box>
 
-                <TextField
-                  label="Username"
-                  value={username}
-                  onChange={setUsername}
-                  autoComplete="username"
-                />
-                <TextField
-                  label="Password"
-                  type="password"
-                  value={password}
-                  onChange={setPassword}
-                  autoComplete="current-password"
-                />
-                
-                <Button primary fullWidth loading={loading} onClick={handleLogin}>
-                  Login
-                </Button>
+              {success && (
+                <Box paddingBlockEnd="4">
+                  <Banner status="success">{success}</Banner>
+                </Box>
+              )}
+
+              {error && (
+                <Box paddingBlockEnd="4">
+                  <Banner status="critical">{error}</Banner>
+                </Box>
+              )}
+
+              <FormLayout>
+                <TextField label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" />
+                <TextField label="Password" type="password" value={password} onChange={setPassword} autoComplete="current-password" />
+                <Button primary fullWidth loading={loading} onClick={handleLogin}>Login</Button>
               </FormLayout>
+
+              <Box paddingBlockStart="4" textAlign="center">
+                <Text>Don't have an account? <Link onClick={() => navigate('/signup')}>Sign Up</Link></Text>
+              </Box>
             </Card>
-          </div>
-        </Layout.Section>
-      </Layout>
-    </Page>
+          </Layout.Section>
+        </Layout>
+      </Page>
+    </div>
   );
 }

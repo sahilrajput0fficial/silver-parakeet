@@ -19,7 +19,7 @@ async function completeDraftOrder(shopDomain, accessToken, draftOrderId, email) 
   if (!accessToken) throw new Error('accessToken is missing');
 
   // Wait 2s to let Shopify process the draft order
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  await new Promise(resolve => setTimeout(resolve, 1000));
 
   const cleanDomain = shopDomain.replace(/^https?:\/\//, '').replace(/\/$/, '');
 

@@ -11,7 +11,7 @@ const REQUIRED_COLUMNS = [
 ];
 
 /* ─── Validate & process uploaded CSV rows ─── */
-router.post('/api/csv/upload', authenticateToken, (req, res) => {
+router.post('/api/csv/upload', authenticateToken, async (req, res) => {
   try {
     const { rows } = req.body;
 
@@ -25,30 +25,26 @@ router.post('/api/csv/upload', authenticateToken, (req, res) => {
     rows.forEach((row, index) => {
       const rowErrors = [];
 
-      // Check required fields
       REQUIRED_COLUMNS.forEach(col => {
         if (!row[col] || String(row[col]).trim() === '') {
           rowErrors.push(`Missing ${col}`);
         }
       });
 
-      // Validate email format
       if (row.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email.trim())) {
         rowErrors.push('Invalid email format');
       }
 
-      // Validate price
       if (row.product_price) {
         const price = parseFloat(row.product_price);
         if (isNaN(price) || price <= 0) {
-          rowErrors.push('Invalid product_price (must be a positive number)');
+          rowErrors.push('Invalid product_price');
         }
       }
 
       if (rowErrors.length > 0) {
         errors.push({ row: index + 1, email: row.email || 'N/A', errors: rowErrors });
       } else {
-        // Normalize the row data
         validRows.push({
           index: index,
           email: row.email.trim(),
@@ -67,7 +63,7 @@ router.post('/api/csv/upload', authenticateToken, (req, res) => {
       }
     });
 
-    logActivity(req.user.id, 'CSV Uploaded', `Uploaded a CSV with ${validRows.length} valid rows out of ${rows.length}`, req.ip);
+    await logActivity(req.user.id, 'CSV Uploaded', `Uploaded a CSV with ${validRows.length} valid rows`, req.ip);
 
     res.json({
       rows: validRows,
@@ -99,7 +95,6 @@ router.get('/api/csv/demo', (req, res) => {
   res.send(csvContent);
 });
 
-/* ─── Download demo store config CSV ─── */
 router.get('/api/csv/demo-stores', (req, res) => {
   const csvContent = [
     'name,shop_domain,client_id,client_secret,max_orders',

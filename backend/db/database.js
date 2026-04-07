@@ -1,136 +1,26 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
-const bcrypt = require('bcryptjs');
+
 // --- Configuration ---
-let db;
-try {
-  const dbPath = path.join(__dirname, 'shopify_app.db');
-  db = new Database(dbPath);
-  console.log("Database connected: " + dbPath);
-} catch (error) {
-  console.error("DB Error:", error.message);
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.error("Error: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in .env");
 }
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // Encryption Key should be 32 bytes for AES-256-CBC
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
 const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16; 
 
-// Initialize database schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS stores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    api_name TEXT NOT NULL,
-    shop_domain TEXT UNIQUE NOT NULL,
-    access_token_encrypted TEXT NOT NULL,
-    access_token_iv TEXT NOT NULL,
-    max_orders INTEGER DEFAULT 100,
-    usage_count INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-// TASK 1 — send_progress table for resume feature
-db.exec(`
-  CREATE TABLE IF NOT EXISTS send_progress (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    shop_domain TEXT NOT NULL,
-    email TEXT NOT NULL,
-    row_index INTEGER NOT NULL,
-    status TEXT DEFAULT 'pending',
-    order_id TEXT,
-    draft_order_id TEXT,
-    error_message TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-// Create index for fast lookups by session_id
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_send_progress_session 
-  ON send_progress(session_id)
-`);
-
-// --- Multi-User Tables ---
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'member',
-    daily_limit INTEGER,
-    created_at TEXT DEFAULT (datetime('now')),
-    force_change_password INTEGER DEFAULT 1
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS activity_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    action TEXT NOT NULL,
-    details TEXT,
-    ip_address TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS usage_logs (
-    user_id INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    emails_sent_today INTEGER DEFAULT 0,
-    PRIMARY KEY (user_id, date)
-  )
-`);
-
-// --- Migrations for existing tables ---
-try {
-  db.exec("ALTER TABLE stores ADD COLUMN user_id INTEGER");
-} catch (e) {}
-
-try {
-  db.exec("ALTER TABLE send_progress ADD COLUMN user_id INTEGER");
-} catch (e) {}
-
-// --- Migrations for Auto API Switching ---
-try { db.exec("ALTER TABLE stores ADD COLUMN is_exhausted INTEGER DEFAULT 0"); } catch (e) {}
-try { db.exec("ALTER TABLE stores ADD COLUMN is_active INTEGER DEFAULT 1"); } catch (e) {}
-try { db.exec("ALTER TABLE stores ADD COLUMN priority INTEGER DEFAULT 1"); } catch (e) {}
-
-try { db.exec("ALTER TABLE send_progress ADD COLUMN api_id INTEGER"); } catch (e) {}
-try { db.exec("ALTER TABLE send_progress ADD COLUMN api_name TEXT"); } catch (e) {}
-
-// --- Default Admin Account ---
-const existingAdmin = db.prepare('SELECT * FROM users WHERE username = ?').get('admin');
-if (!existingAdmin) {
-  const hash = bcrypt.hashSync('admin123', 10);
-  db.prepare('INSERT INTO users (username, password, role, force_change_password) VALUES (?, ?, ?, ?)').run('admin', hash, 'admin', 1);
-  console.log('[DB] Created default admin account (admin / admin123)');
-}
-
-// TASK 7 — Clear old sessions on startup (older than 7 days)
-function clearOldSessions() {
-  const result = db.prepare(
-    `DELETE FROM send_progress WHERE created_at < datetime('now', '-7 days')`
-  ).run();
-  if (result.changes > 0) {
-    console.log(`[DB] Cleared ${result.changes} old session rows (>7 days)`);
-  }
-}
-
-// Run cleanup on startup
-clearOldSessions();
-
 /**
  * Helper to ensure encryption key is 32 bytes (AES-256)
  */
 function getEncryptionKey() {
   if (!ENCRYPTION_KEY) return null;
-  // If key is already 32 bytes, use it. Otherwise, hash it to create a 32-byte key.
   if (ENCRYPTION_KEY.length === 32) return Buffer.from(ENCRYPTION_KEY);
   return crypto.createHash('sha256').update(String(ENCRYPTION_KEY)).digest();
 }
@@ -177,30 +67,36 @@ function decrypt(encryptedText, ivHex) {
 
 // --- Store Operations ---
 
-function addStore(user_id, api_name, shop_domain, access_token, max_orders = 100) {
+async function addStore(user_id, api_name, shop_domain, access_token, max_orders = 100) {
   const { iv, encrypted } = encrypt(access_token);
-  const stmt = db.prepare(`
-    INSERT INTO stores (user_id, api_name, shop_domain, access_token_encrypted, access_token_iv, max_orders)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(shop_domain) DO UPDATE SET
-      user_id = excluded.user_id,
-      api_name = excluded.api_name,
-      access_token_encrypted = excluded.access_token_encrypted,
-      access_token_iv = excluded.access_token_iv,
-      max_orders = excluded.max_orders
-  `);
-  return stmt.run(user_id, api_name, shop_domain, encrypted, iv, max_orders);
+  const { data, error } = await supabase
+    .from('stores')
+    .upsert({
+      user_id,
+      api_name,
+      shop_domain,
+      access_token_encrypted: encrypted,
+      access_token_iv: iv,
+      max_orders,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'shop_domain' })
+    .select();
+
+  if (error) throw error;
+  return data;
 }
 
-function getAllStores(user_id, role) {
-  let rows;
-  if (role === 'admin') {
-    rows = db.prepare('SELECT * FROM stores ORDER BY created_at DESC').all();
-  } else {
-    rows = db.prepare('SELECT * FROM stores WHERE user_id = ? ORDER BY created_at DESC').all(user_id);
+async function getAllStores(user_id, role) {
+  let query = supabase.from('stores').select('*').order('created_at', { ascending: false });
+  
+  if (role !== 'admin') {
+    query = query.eq('user_id', user_id);
   }
   
-  return rows.map(row => ({
+  const { data, error } = await query;
+  if (error) throw error;
+  
+  return data.map(row => ({
     id: row.id,
     user_id: row.user_id,
     api_name: row.api_name,
@@ -208,186 +104,218 @@ function getAllStores(user_id, role) {
     access_token: decrypt(row.access_token_encrypted, row.access_token_iv),
     max_orders: row.max_orders,
     usage_count: row.usage_count,
-    created_at: row.created_at
+    created_at: row.created_at,
+    is_active: row.is_active,
+    is_exhausted: row.is_exhausted,
+    priority: row.priority
   }));
 }
 
-function getStoreByDomain(shop_domain, user_id, role) {
-  let row;
-  if (role === 'admin') {
-    row = db.prepare('SELECT * FROM stores WHERE shop_domain = ?').get(shop_domain);
-  } else {
-    row = db.prepare('SELECT * FROM stores WHERE shop_domain = ? AND user_id = ?').get(shop_domain, user_id);
+async function getStoreByDomain(shop_domain, user_id, role) {
+  let query = supabase.from('stores').select('*').eq('shop_domain', shop_domain);
+  
+  if (role !== 'admin') {
+    query = query.eq('user_id', user_id);
   }
   
-  if (!row) return null;
+  const { data, error } = await query.single();
+  if (error && error.code !== 'PGRST116') throw error; // PGRST116 is no rows found
+  
+  if (!data) return null;
   
   return {
-    id: row.id,
-    user_id: row.user_id,
-    api_name: row.api_name,
-    shop_domain: row.shop_domain,
-    access_token: decrypt(row.access_token_encrypted, row.access_token_iv),
-    max_orders: row.max_orders,
-    usage_count: row.usage_count,
-    created_at: row.created_at
+    ...data,
+    access_token: decrypt(data.access_token_encrypted, data.access_token_iv)
   };
 }
 
-function deleteStoreByDomain(shop_domain, user_id, role) {
-  if (role === 'admin') {
-    return db.prepare('DELETE FROM stores WHERE shop_domain = ?').run(shop_domain);
+async function deleteStoreByDomain(shop_domain, user_id, role) {
+  let query = supabase.from('stores').delete().eq('shop_domain', shop_domain);
+  
+  if (role !== 'admin') {
+    query = query.eq('user_id', user_id);
   }
-  return db.prepare('DELETE FROM stores WHERE shop_domain = ? AND user_id = ?').run(shop_domain, user_id);
+  
+  const { error } = await query;
+  if (error) throw error;
 }
 
-function deleteAllStores(user_id, role) {
-  if (role === 'admin') {
-    return db.prepare('DELETE FROM stores').run();
+async function deleteAllStores(user_id, role) {
+  let query = supabase.from('stores').delete();
+  
+  if (role !== 'admin') {
+    query = query.eq('user_id', user_id);
+  } else {
+    // Admin deletes everything? Actually admin might want to delete all stores system-wide or just their own.
+    // Based on previous code, admin deletes all rows.
+    query = query.neq('id', 0); // Hack to match all rows in Supabase delete
   }
-  return db.prepare('DELETE FROM stores WHERE user_id = ?').run(user_id);
+  
+  const { error } = await query;
+  if (error) throw error;
 }
 
-function incrementUsage(shop_domain) {
-  return db.prepare('UPDATE stores SET usage_count = usage_count + 1 WHERE shop_domain = ?').run(shop_domain);
+async function incrementUsage(shop_domain) {
+  const { data: store } = await supabase.from('stores').select('usage_count').eq('shop_domain', shop_domain).single();
+  if (!store) return;
+
+  const { error } = await supabase
+    .from('stores')
+    .update({ usage_count: store.usage_count + 1 })
+    .eq('shop_domain', shop_domain);
+    
+  if (error) throw error;
 }
 
-function resetAllUsage(user_id, role) {
-  if (role === 'admin') {
-    return db.prepare('UPDATE stores SET usage_count = 0').run();
+async function resetAllUsage(user_id, role) {
+  let query = supabase.from('stores').update({ usage_count: 0 });
+  
+  if (role !== 'admin') {
+    query = query.eq('user_id', user_id);
+  } else {
+    query = query.neq('id', 0);
   }
-  return db.prepare('UPDATE stores SET usage_count = 0 WHERE user_id = ?').run(user_id);
+  
+  const { error } = await query;
+  if (error) throw error;
 }
 
-function logActivity(user_id, action, details, ip_address) {
+async function logActivity(user_id, action, details, ip_address) {
   try {
-    db.prepare('INSERT INTO activity_logs (user_id, action, details, ip_address) VALUES (?, ?, ?, ?)').run(
-      user_id, action, details || '', ip_address || ''
-    );
+    const { error } = await supabase.from('activity_logs').insert({
+      user_id,
+      action,
+      details: details || '',
+      ip_address: ip_address || ''
+    });
+    if (error) throw error;
   } catch (e) {
     console.error('Failed to log activity:', e.message);
   }
 }
 
-function getNextAvailableAPI(user_id) {
-  const apis = db.prepare(`
-    SELECT * FROM stores
-    WHERE user_id = ?
-    AND is_active = 1
-    AND is_exhausted = 0
-    AND usage_count < max_orders
-    ORDER BY priority ASC
-    LIMIT 1
-  `).all(user_id);
+async function getNextAvailableAPI(user_id) {
+  const { data, error } = await supabase
+    .from('stores')
+    .select('*')
+    .eq('user_id', user_id)
+    .eq('is_active', true)
+    .eq('is_exhausted', false)
+    .lt('usage_count', supabase.from('stores').select('max_orders')) // This logic needs to be handled carefully in SQL
+    .order('priority', { ascending: true })
+    .limit(1);
 
-  if (apis.length === 0) return null;
-
-  const api = apis[0];
-  const decryptedToken = decrypt(api.access_token_encrypted, api.access_token_iv);
+  // Correction: Supabase doesn't support column-to-column comparison directly in simple filters easily.
+  // We'll use a raw filter or fetch and filter. Actually, let's use a more explicit query.
   
-  return { ...api, access_token: decryptedToken };
+  const { data: finalData, error: finalError } = await supabase.rpc('get_next_api', { p_user_id: user_id });
+  
+  if (finalError) {
+    // Fallback if RPC not defined
+    const { data: stores } = await supabase
+      .from('stores')
+      .select('*')
+      .eq('user_id', user_id)
+      .eq('is_active', true)
+      .eq('is_exhausted', false)
+      .order('priority', { ascending: true });
+    
+    const api = stores.find(s => s.usage_count < s.max_orders);
+    if (!api) return null;
+    
+    return { ...api, access_token: decrypt(api.access_token_encrypted, api.access_token_iv) };
+  }
+
+  if (!finalData || finalData.length === 0) return null;
+  const api = finalData[0];
+  return { ...api, access_token: decrypt(api.access_token_encrypted, api.access_token_iv) };
 }
 
-function markAPIUsed(api_id) {
-  db.prepare(`
-    UPDATE stores
-    SET usage_count = usage_count + 1,
-        is_exhausted = CASE 
-          WHEN usage_count + 1 >= max_orders 
-          THEN 1 ELSE 0 
-        END
-    WHERE id = ?
-  `).run(api_id);
+async function markAPIUsed(api_id) {
+  const { data: api } = await supabase.from('stores').select('usage_count, max_orders').eq('id', api_id).single();
+  if (!api) return;
+
+  const newCount = api.usage_count + 1;
+  const isExhausted = newCount >= api.max_orders;
+
+  await supabase
+    .from('stores')
+    .update({ 
+      usage_count: newCount,
+      is_exhausted: isExhausted
+    })
+    .eq('id', api_id);
 }
 
-function markAPIExhausted(api_id) {
-  db.prepare(`
-    UPDATE stores
-    SET is_exhausted = 1,
-        is_active = 0
-    WHERE id = ?
-  `).run(api_id);
-  console.log(`API ${api_id} exhausted — switching to next`);
+async function markAPIExhausted(api_id) {
+  await supabase
+    .from('stores')
+    .update({ 
+      is_exhausted: true,
+      is_active: false
+    })
+    .eq('id', api_id);
 }
 
-// --- Usage & Daily Limits ---
-function checkDailyLimit(user_id) {
-  const user = db.prepare('SELECT daily_limit FROM users WHERE id = ?').get(user_id);
-  if (!user || user.daily_limit === null) return { passes: true, limit: null, sent_today: 0 }; // No limit (Admin or unlimited member)
+async function checkDailyLimit(user_id) {
+  const { data: user } = await supabase.from('users').select('daily_limit').eq('id', user_id).single();
+  if (!user || user.daily_limit === null) return { passes: true, limit: null, sent_today: 0 };
 
-  const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-  const usage = db.prepare('SELECT emails_sent_today FROM usage_logs WHERE user_id = ? AND date = ?').get(user_id, date);
+  const date = new Date().toISOString().split('T')[0];
+  const { data: usage } = await supabase.from('usage_logs').select('emails_sent_today').eq('user_id', user_id).eq('date', date).single();
   const sentToday = usage ? usage.emails_sent_today : 0;
 
-  if (sentToday >= user.daily_limit) {
-    return { passes: false, limit: user.daily_limit, sent_today: sentToday };
-  }
-  return { passes: true, limit: user.daily_limit, sent_today: sentToday };
+  return { 
+    passes: sentToday < user.daily_limit, 
+    limit: user.daily_limit, 
+    sent_today: sentToday 
+  };
 }
 
-function incrementDailyLimit(user_id) {
+async function incrementDailyLimit(user_id) {
   const date = new Date().toISOString().split('T')[0];
-  db.prepare(`
-    INSERT INTO usage_logs (user_id, date, emails_sent_today) 
-    VALUES (?, ?, 1) 
-    ON CONFLICT(user_id, date) DO UPDATE SET emails_sent_today = emails_sent_today + 1
-  `).run(user_id, date);
+  const { data: usage } = await supabase.from('usage_logs').select('emails_sent_today').eq('user_id', user_id).eq('date', date).single();
+  
+  if (usage) {
+    await supabase.from('usage_logs').update({ emails_sent_today: usage.emails_sent_today + 1 }).eq('user_id', user_id).eq('date', date);
+  } else {
+    await supabase.from('usage_logs').insert({ user_id, date, emails_sent_today: 1 });
+  }
 }
 
-// --- Send Progress Operations (RESUME FEATURE) ---
+// --- Send Progress Operations ---
 
-/**
- * TASK 2 — Generate a unique session ID for a CSV batch.
- * Same CSV on same day = same session_id (enables resume detection).
- */
 function generateSessionId(rows, shopDomain, userId) {
   const firstEmail = rows[0]?.email || '';
   const lastEmail = rows[rows.length - 1]?.email || '';
   const count = rows.length;
   const date = new Date().toDateString();
-
   const raw = `${firstEmail}-${lastEmail}-${count}-${shopDomain}-${date}-${userId}`;
 
-  // Simple hash
   let hash = 0;
   for (let i = 0; i < raw.length; i++) {
     hash = ((hash << 5) - hash) + raw.charCodeAt(i);
     hash = hash & hash;
   }
-
   return `session_${Math.abs(hash)}`;
 }
 
-/**
- * TASK 3 — Check if a session already has progress (resume detection).
- */
-function checkExistingProgress(sessionId) {
-  const existingRows = db.prepare(
-    `SELECT * FROM send_progress WHERE session_id = ? ORDER BY row_index ASC`
-  ).all(sessionId);
+async function checkExistingProgress(sessionId) {
+  const { data: existingRows, error } = await supabase
+    .from('send_progress')
+    .select('*')
+    .eq('session_id', sessionId)
+    .order('row_index', { ascending: true });
 
-  if (existingRows.length === 0) {
-    return {
-      isResume: false,
-      alreadySent: [],
-      lastSentIndex: -1,
-      totalSentSoFar: 0,
-      totalFailed: 0,
-      rows: []
-    };
+  if (error) throw error;
+
+  if (!existingRows || existingRows.length === 0) {
+    return { isResume: false, alreadySent: [], lastSentIndex: -1, totalSentSoFar: 0, totalFailed: 0, rows: [] };
   }
 
-  const alreadySent = existingRows
-    .filter(r => r.status === 'sent')
-    .map(r => r.row_index);
-
-  const failedRows = existingRows
-    .filter(r => r.status === 'failed')
-    .map(r => r.row_index);
-
-  const lastSentIndex = alreadySent.length > 0
-    ? Math.max(...alreadySent)
-    : -1;
+  const alreadySent = existingRows.filter(r => r.status === 'sent').map(r => r.row_index);
+  const failedRows = existingRows.filter(r => r.status === 'failed').map(r => r.row_index);
+  const lastSentIndex = alreadySent.length > 0 ? Math.max(...alreadySent) : -1;
 
   return {
     isResume: true,
@@ -400,66 +328,76 @@ function checkExistingProgress(sessionId) {
   };
 }
 
-/**
- * Save all rows as "pending" for a fresh session.
- */
-function initSessionRows(sessionId, shopDomain, rows, user_id) {
-  const stmt = db.prepare(
-    `INSERT INTO send_progress (session_id, shop_domain, email, row_index, status, user_id)
-     VALUES (?, ?, ?, ?, 'pending', ?)`
-  );
+async function initSessionRows(sessionId, shopDomain, rows, user_id) {
+  const sessionRows = rows.map((row, i) => ({
+    session_id: sessionId,
+    shop_domain: shopDomain,
+    email: row.email,
+    row_index: i,
+    status: 'pending',
+    user_id
+  }));
 
-  const insertMany = db.transaction((rows) => {
-    for (let i = 0; i < rows.length; i++) {
-      stmt.run(sessionId, shopDomain, rows[i].email, i, user_id);
-    }
-  });
-
-  insertMany(rows);
+  const { error } = await supabase.from('send_progress').insert(sessionRows);
+  if (error) throw error;
 }
 
-/**
- * Update a row's status after send attempt.
- */
-function updateRowProgress(sessionId, rowIndex, status, orderId, draftOrderId, errorMessage, api_id = null, api_name = null) {
-  db.prepare(
-    `UPDATE send_progress 
-     SET status = ?, order_id = ?, draft_order_id = ?, error_message = ?, api_id = ?, api_name = ?, updated_at = datetime('now')
-     WHERE session_id = ? AND row_index = ?`
-  ).run(status, orderId || null, draftOrderId || null, errorMessage || null, api_id, api_name, sessionId, rowIndex);
+async function updateRowProgress(sessionId, rowIndex, status, orderId, draftOrderId, errorMessage, api_id = null, api_name = null) {
+  await supabase
+    .from('send_progress')
+    .update({ 
+      status, 
+      order_id: orderId || null, 
+      draft_order_id: draftOrderId || null, 
+      error_message: errorMessage || null, 
+      api_id, 
+      api_name, 
+      updated_at: new Date().toISOString()
+    })
+    .eq('session_id', sessionId)
+    .eq('row_index', rowIndex);
 }
 
-/**
- * Delete all progress for a session (Start Fresh).
- */
-function deleteSession(sessionId, user_id, role) {
-  if (role === 'admin') {
-    return db.prepare('DELETE FROM send_progress WHERE session_id = ?').run(sessionId);
+async function deleteSession(sessionId, user_id, role) {
+  let query = supabase.from('send_progress').delete().eq('session_id', sessionId);
+  if (role !== 'admin') query = query.eq('user_id', user_id);
+  await query;
+}
+
+async function clearAllSendHistory(user_id, role) {
+  let query = supabase.from('send_progress').delete();
+  if (role !== 'admin') {
+    query = query.eq('user_id', user_id);
+  } else {
+    query = query.neq('id', 0);
   }
-  return db.prepare('DELETE FROM send_progress WHERE session_id = ? AND user_id = ?').run(sessionId, user_id);
+  await query;
 }
 
-/**
- * Clear ALL send progress history.
- */
-function clearAllSendHistory(user_id, role) {
-  if (role === 'admin') {
-    return db.prepare('DELETE FROM send_progress').run();
-  }
-  return db.prepare('DELETE FROM send_progress WHERE user_id = ?').run(user_id);
+async function clearOldSessions() {
+  const ageLimit = new Date();
+  ageLimit.setDate(ageLimit.getDate() - 7);
+  
+  const { error, count } = await supabase
+    .from('send_progress')
+    .delete()
+    .lt('created_at', ageLimit.toISOString());
+    
+  if (error) console.error('Failed to clear old sessions:', error.message);
 }
 
-/**
- * Get progress details for a specific row in a session.
- */
-function getRowProgress(sessionId, rowIndex) {
-  return db.prepare(
-    `SELECT * FROM send_progress WHERE session_id = ? AND row_index = ?`
-  ).get(sessionId, rowIndex);
+async function getRowProgress(sessionId, rowIndex) {
+  const { data } = await supabase
+    .from('send_progress')
+    .select('*')
+    .eq('session_id', sessionId)
+    .eq('row_index', rowIndex)
+    .single();
+  return data;
 }
 
 module.exports = {
-  db,
+  supabase,
   addStore,
   getAllStores,
   getStoreByDomain,
@@ -470,7 +408,6 @@ module.exports = {
   logActivity,
   checkDailyLimit,
   incrementDailyLimit,
-  // Resume feature exports
   generateSessionId,
   checkExistingProgress,
   initSessionRows,
